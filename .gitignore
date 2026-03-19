@@ -1,0 +1,43 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+ccg
+ccg-server
+build/
+
+# Test binary
+*.test
+
+# Output of go coverage
+*.out
+
+# Dependency directories
+vendor/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Config files with real data
+config.json
+*.local.json
+
+# Log files
+*.log
+logs/
+
+# Environment files
+.env
+.env.*
+
+# Go sum file (will be regenerated)
+go.sum

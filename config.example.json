@@ -1,0 +1,65 @@
+{
+  "LOG": false,
+  "LOG_LEVEL": "debug",
+  "CLAUDE_PATH": "",
+  "HOST": "127.0.0.1",
+  "PORT": "3456",
+  "API_KEY": "sk-your-api-key",
+  "API_TIMEOUT_MS": "600000",
+  "transformers": [],
+  "providers": [
+    {
+      "name": "openai",
+      "api_base_url": "https://api.openai.com/v1/chat/completions",
+      "api_key": "${OPENAI_API_KEY}",
+      "models": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"],
+      "transformer": {
+        "use": []
+      }
+    },
+    {
+      "name": "deepseek",
+      "api_base_url": "https://api.deepseek.com/v1/chat/completions",
+      "api_key": "${DEEPSEEK_API_KEY}",
+      "models": ["deepseek-chat", "deepseek-coder"],
+      "transformer": {
+        "use": []
+      }
+    },
+    {
+      "name": "anthropic",
+      "api_base_url": "https://api.anthropic.com/v1/messages",
+      "api_key": "${ANTHROPIC_API_KEY}",
+      "models": ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-haiku-20240307"],
+      "transformer": {
+        "use": ["anthropic->openai"]
+      }
+    },
+    {
+      "name": "groq",
+      "api_base_url": "https://api.groq.com/openai/v1/chat/completions",
+      "api_key": "${GROQ_API_KEY}",
+      "models": ["llama-3.3-70b-versatile", "mixtral-8x7b-32768"],
+      "transformer": {
+        "use": []
+      }
+    },
+    {
+      "name": "google",
+      "api_base_url": "https://generativelanguage.googleapis.com/v1beta/models",
+      "api_key": "${GOOGLE_API_KEY}",
+      "models": ["gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"],
+      "transformer": {
+        "use": ["gemini"]
+      }
+    }
+  ],
+  "Router": {
+    "default": "openai,gpt-4o",
+    "background": "openai,gpt-4o-mini",
+    "think": "openai,gpt-4o",
+    "longContext": "anthropic,claude-3-5-sonnet-20241022",
+    "longContextThreshold": 60000,
+    "webSearch": "google,gemini-2.0-flash-exp"
+  }
+}
