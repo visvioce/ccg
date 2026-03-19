@@ -1,0 +1,36 @@
+{
+  "name": "@visvioce/ccg",
+  "version": "2.0.0",
+  "description": "CCR Gateway (Go) - A Go rewrite based on CCR",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/visvioce/ccg.git"
+  },
+  "keywords": [
+    "ccr",
+    "router",
+    "llm",
+    "gateway"
+  ],
+  "author": "visvioce",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/visvioce/ccg/issues"
+  },
+  "homepage": "https://github.com/visvioce/ccg",
+  "bin": {
+    "ccg": "./bin/ccg"
+  },
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ]
+}
