@@ -2,13 +2,13 @@
 
 # CCG
 
-**Claude Code Gateway (Go)**
+**CCR Gateway (Go)**
 
 [![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://golang.org)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/visvioce/ccg?style=social)](https://github.com/visvioce/ccg)
 
-一个用 Go 重写的 Claude Code 路由网关，基于 [CCR (Claude Code Router)](https://github.com/musistudio/claude-code-router) 项目
+基于 [CCR](https://github.com/musistudio/claude-code-router) 的 Go 语言重写版本
 
 *轻量、快速、开箱即用*
 
@@ -20,7 +20,7 @@
 
 ## 关于项目
 
-CCG 是 [CCR (Claude Code Router)](https://github.com/musistudio/claude-code-router) 的 Go 语言重写版本。
+CCG 是 [CCR](https://github.com/musistudio/claude-code-router) 的 Go 语言重写版本。
 
 **Vibe Coding 产物**
 

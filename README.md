@@ -2,13 +2,13 @@
 
 # CCG
 
-**Claude Code Gateway (Go)**
+**CCR Gateway (Go)**
 
 [![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://golang.org)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/visvioce/ccg?style=social)](https://github.com/visvioce/ccg)
 
-A Go rewrite of Claude Code Router, based on [CCR (Claude Code Router)](https://github.com/musistudio/claude-code-router)
+A Go rewrite based on [CCR](https://github.com/musistudio/claude-code-router)
 
 *Lightweight, Fast, Ready to Use*
 
@@ -20,7 +20,7 @@ A Go rewrite of Claude Code Router, based on [CCR (Claude Code Router)](https://
 
 ## About
 
-CCG is a Go language rewrite of [CCR (Claude Code Router)](https://github.com/musistudio/claude-code-router).
+CCG is a Go rewrite of [CCR](https://github.com/musistudio/claude-code-router).
 
 **Vibe Coding Product**
 
