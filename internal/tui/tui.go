@@ -43,7 +43,7 @@ type Model struct {
 	dialogType string
 
 	// Status
-	statusMsg string
+	statusMsg     string
 	serverRunning bool
 	requestCount  int
 	tokenCount    int
@@ -62,7 +62,7 @@ func New() Model {
 
 // Init initializes the TUI model
 func (m Model) Init() tea.Cmd {
-	return tea.WindowSize
+	return tea.WindowSize()
 }
 
 // Update handles messages and updates the model
@@ -169,7 +169,7 @@ func (m *Model) handleClick(x, y int) {
 	headerHeight := 2
 	contentHeight := m.height - headerHeight - 2 // -2 for status bar
 	leftWidth := m.width * 3 / 5
-	rightWidth := m.width - leftWidth
+	_ = m.width - leftWidth // rightWidth (for future use)
 	routerHeight := contentHeight * 3 / 5
 
 	// Header row (y = 0 or 1)
@@ -485,14 +485,14 @@ func (m Model) renderProviders(width, height int) string {
 	cardStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("#444444")).
-		Width(width - 4).
+		Width(width-4).
 		Padding(0, 1)
 
 	selectedCardStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("#7D56F4")).
 		Background(lipgloss.Color("#2D2D2D")).
-		Width(width - 4).
+		Width(width-4).
 		Padding(0, 1)
 
 	var sb strings.Builder
@@ -575,7 +575,7 @@ func (m Model) renderRouter(width, height int) string {
 			value = "Select model..."
 		}
 
-		label := labelStyle.Render(field.name+":")
+		label := labelStyle.Render(field.name + ":")
 		dropdown := valueStyle.Render(value) + dropdownArrow
 
 		line := label + " " + dropdown
