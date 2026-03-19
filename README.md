@@ -2,7 +2,7 @@
 
 # CCG
 
-**CCR Gateway (Go)**
+**CCG**
 
 [![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://golang.org)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -48,7 +48,7 @@ This project was entirely written by AI. The entire codebase was completed throu
 
 ```bash
 # One-line install (recommended)
-curl -fsSL https://raw.githubusercontent.com/visvioce/ccg/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/visvioce/ccg/master/install.sh | bash
 
 # Or build from source
 git clone https://github.com/visvioce/ccg.git

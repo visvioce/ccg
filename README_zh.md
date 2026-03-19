@@ -2,7 +2,7 @@
 
 # CCG
 
-**CCR Gateway (Go)**
+**CCG**
 
 [![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://golang.org)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -48,7 +48,7 @@ CCG 是 [CCR](https://github.com/musistudio/claude-code-router) 的 Go 语言重
 
 ```bash
 # 一键安装（推荐）
-curl -fsSL https://raw.githubusercontent.com/visvioce/ccg/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/visvioce/ccg/master/install.sh | bash
 
 # 或者从源码编译
 git clone https://github.com/visvioce/ccg.git
