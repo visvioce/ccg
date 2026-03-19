@@ -34,7 +34,7 @@ This project was entirely written by AI. The entire codebase was completed throu
 |---------|-------------|
 | 🚀 **Lightweight & Fast** | Native Go compilation, no runtime dependencies, instant startup |
 | 💾 **Low Memory** | ~20-30MB server memory, 70%+ savings vs Node.js version |
-| 🖥️ **Terminal UI** | Built-in TUI for easy configuration |
+| 🖥️ **Terminal UI** | Built-in TUI for easy configuration (🚧 In Development) |
 | 🔀 **Smart Routing** | Automatically selects optimal model based on scenario |
 | 🔌 **Multi-Provider** | Supports OpenAI, DeepSeek, Gemini and more |
 | ⚡ **Request Transform** | Auto-adapts to different provider API formats |
