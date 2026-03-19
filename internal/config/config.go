@@ -18,28 +18,29 @@ type Config struct {
 }
 
 type Provider struct {
-	Name           string         `json:"name"`
-	Host           string         `json:"api_base_url"`
-	APIKey         string         `json:"api_key"`
-	Models         []string       `json:"models"`
-	Transform      map[string]any `json:"transformer"`
-	TransformList  []string       `json:"transform"`
+	Name          string         `json:"name"`
+	Host          string         `json:"api_base_url"`
+	APIKey        string         `json:"api_key"`
+	Models        []string       `json:"models"`
+	Transform     map[string]any `json:"transformer"`
+	TransformList []string       `json:"transform"`
 }
 
 type RouterConfig struct {
 	Default              string            `json:"default"`
 	Background           string            `json:"background"`
-	Think               string            `json:"think"`
-	LongContext         string            `json:"longContext"`
-	LongContextThreshold int              `json:"longContextThreshold"`
-	WebSearch           string            `json:"webSearch"`
-	Image               string            `json:"image"`
-	Scenarios           map[string]string `json:"scenarios"`
+	Think                string            `json:"think"`
+	LongContext          string            `json:"longContext"`
+	LongContextThreshold int               `json:"longContextThreshold"`
+	WebSearch            string            `json:"webSearch"`
+	Image                string            `json:"image"`
+	Scenarios            map[string]string `json:"scenarios"`
 }
 
 type AppConfig struct {
-	Providers []Provider    `json:"providers"`
-	Router    *RouterConfig `json:"Router"`
+	Providers    []Provider    `json:"providers"`
+	ProvidersAlt []Provider    `json:"Providers"` // CCR兼容
+	Router       *RouterConfig `json:"Router"`
 }
 
 func New() *Config {
@@ -67,6 +68,11 @@ func (c *Config) Load(path string) error {
 	var cfg AppConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	// 兼容CCR格式: 如果providers为空，使用Providers
+	if len(cfg.Providers) == 0 && len(cfg.ProvidersAlt) > 0 {
+		cfg.Providers = cfg.ProvidersAlt
 	}
 
 	for i := range cfg.Providers {
@@ -99,6 +105,13 @@ func (c *Config) Get(key string) string {
 	if v, ok := c.data[key]; ok {
 		if s, ok := v.(string); ok {
 			return s
+		}
+		// 兼容数字类型（如PORT: 3456）
+		if n, ok := v.(float64); ok {
+			return fmt.Sprintf("%.0f", n)
+		}
+		if n, ok := v.(int); ok {
+			return fmt.Sprintf("%d", n)
 		}
 	}
 	return ""
