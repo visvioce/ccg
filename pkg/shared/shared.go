@@ -9,6 +9,7 @@ var (
 	HomeDir     = getHomeDir()
 	ConfigDir   = filepath.Join(HomeDir, ".ccg")
 	ProjectsDir = filepath.Join(HomeDir, ".claude", "projects")
+	PIDFile     = filepath.Join(HomeDir, ".ccg.pid")
 )
 
 func getHomeDir() string {

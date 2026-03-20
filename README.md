@@ -231,6 +231,17 @@ CCG supports multiple routing scenarios:
 
 ---
 
+## Security Notice
+
+⚠️ **IMPORTANT**: Never commit your configuration file with real API keys to Git!
+
+- `~/.ccg/config.json` is automatically ignored by `.gitignore`
+- Use environment variables (e.g., `${OPENAI_API_KEY}`) in your config instead of hardcoding keys
+- The `config.example.json` file provides a safe template with placeholders
+- See `.gitignore` for the full list of ignored sensitive files
+
+---
+
 ## Environment Variables
 
 Configuration supports environment variable interpolation:

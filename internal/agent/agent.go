@@ -21,8 +21,11 @@ type Tool struct {
 type Agent interface {
 	Name() string
 	ShouldHandle(reqBody map[string]any) bool
+	ShouldHandleV2(reqBody map[string]any, cfg *config.Config) bool
 	GetTools() []Tool
 	HandleToolCall(toolName string, input map[string]any, reqBody map[string]any, provider *config.Provider) (string, error)
+	HandleToolCallV2(toolName string, input map[string]any, reqBody map[string]any, cfg *config.Config, sessionId string) (string, error)
+	ReqHandler(reqBody map[string]any, sessionId string)
 }
 
 type AgentManager struct {
@@ -164,6 +167,21 @@ func (a *ImageAgent) GetTools() []Tool {
 	}
 }
 
+// ShouldHandleV2 新版本，支持 Config
+func (a *ImageAgent) ShouldHandleV2(reqBody map[string]any, cfg *config.Config) bool {
+	return a.ShouldHandle(reqBody)
+}
+
+// HandleToolCallV2 新版本，支持 Config 和 sessionId
+func (a *ImageAgent) HandleToolCallV2(toolName string, input map[string]any, reqBody map[string]any, cfg *config.Config, sessionId string) (string, error) {
+	return a.HandleToolCall(toolName, input, reqBody, &cfg.GetProviders()[0])
+}
+
+// ReqHandler 处理请求，注入系统提示
+func (a *ImageAgent) ReqHandler(reqBody map[string]any, sessionId string) {
+	// 基础版本不做处理，完整功能在 ImageAgentV2 中
+}
+
 func (a *ImageAgent) HandleToolCall(toolName string, input map[string]any, reqBody map[string]any, provider *config.Provider) (string, error) {
 	prompt, ok := input["prompt"].(string)
 	if !ok {
@@ -232,7 +250,7 @@ func (a *ImageAgent) HandleToolCall(toolName string, input map[string]any, reqBo
 var GlobalAgentManager = NewAgentManager()
 
 func init() {
-	GlobalAgentManager.RegisterAgent(NewImageAgent())
+	GlobalAgentManager.RegisterAgent(NewImageAgentV2())
 }
 
 func HandleAgentToolCall(toolName string, input map[string]any, reqBody map[string]any, cfg *config.Config) (string, error) {
@@ -254,6 +272,52 @@ func ShouldHandleAgentTools(reqBody map[string]any) bool {
 }
 
 func AddAgentToolsToRequest(reqBody map[string]any) {
+	tools := GetAgentTools()
+	if len(tools) > 0 {
+		existingTools, _ := reqBody["tools"].([]any)
+		reqBody["tools"] = append(existingTools, tools)
+	}
+}
+
+// ShouldHandleAgentToolsV2 新版本，支持 Config
+func ShouldHandleAgentToolsV2(reqBody map[string]any, cfg *config.Config) bool {
+	for _, agent := range GlobalAgentManager.agents {
+		if agent.ShouldHandleV2(reqBody, cfg) {
+			return true
+		}
+	}
+	return false
+}
+
+// HandleAgentToolCallV2 新版本，支持 Config 和 sessionId
+func HandleAgentToolCallV2(toolName string, input map[string]any, reqBody map[string]any, cfg *config.Config, sessionId string) (string, error) {
+	providers := cfg.GetProviders()
+	if len(providers) == 0 {
+		return "", fmt.Errorf("no providers configured")
+	}
+
+	toolName = strings.TrimPrefix(toolName, "agent_")
+
+	for _, agent := range GlobalAgentManager.agents {
+		for _, tool := range agent.GetTools() {
+			if tool.Name == toolName {
+				return agent.HandleToolCallV2(toolName, input, reqBody, cfg, sessionId)
+			}
+		}
+	}
+
+	return "", fmt.Errorf("tool not found: %s", toolName)
+}
+
+// ProcessAgentRequest 处理 Agent 请求（注入系统提示等）
+func ProcessAgentRequest(reqBody map[string]any, sessionId string) {
+	for _, agent := range GlobalAgentManager.agents {
+		agent.ReqHandler(reqBody, sessionId)
+	}
+}
+
+// AddAgentToolsToRequestV2 新版本
+func AddAgentToolsToRequestV2(reqBody map[string]any, cfg *config.Config) {
 	tools := GetAgentTools()
 	if len(tools) > 0 {
 		existingTools, _ := reqBody["tools"].([]any)

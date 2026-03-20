@@ -10,12 +10,15 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/musistudio/ccg/internal/config"
 	"github.com/musistudio/ccg/internal/preset"
 	"github.com/musistudio/ccg/internal/server"
-	"github.com/musistudio/ccg/internal/tui"
+	"github.com/musistudio/ccg/pkg/shared"
 )
 
 const VERSION = "2.0.0"
@@ -41,11 +44,7 @@ func main() {
 	case "model", "models":
 		showModels()
 	case "ui":
-		fmt.Println("Web UI is not implemented in CCG.")
-		fmt.Println("Use 'ccg tui' for terminal UI instead.")
-		os.Exit(1)
-	case "tui":
-		runTUI()
+		startUI()
 	case "preset":
 		handlePreset()
 	case "activate":
@@ -81,7 +80,6 @@ Commands:
   code          Execute claude command
   model         Interactive model selection
   ui            Open Web UI (not implemented)
-  tui           Open Terminal UI
   preset        Manage presets
   install       Install preset from marketplace
   activate      Output environment variables
@@ -92,21 +90,114 @@ Examples:
   ccg start
   ccg status
   ccg model
-  ccg tui
   ccg preset list`)
 }
 
 func startServer() {
 	log.Println("Starting CCG server...")
+	
+	// Check if already running
+	if isRunning() {
+		log.Println("CCG server is already running")
+		return
+	}
+	
+	// Check if daemon mode
+	if len(os.Args) > 2 && os.Args[2] == "--daemon" {
+		// Run in background using setsid to create new session
+		cmd := exec.Command("setsid", os.Args[0], "start")
+		cmd.Stdout = nil
+		cmd.Stderr = nil
+		if err := cmd.Start(); err != nil {
+			log.Fatalf("Failed to start daemon: %v", err)
+		}
+		// Don't save PID here - let the child process save its own PID
+		// Just wait a moment for child to start
+		time.Sleep(500 * time.Millisecond)
+		// Read PID from file (child should have created it)
+		if pidData, err := os.ReadFile(shared.PIDFile); err == nil {
+			log.Printf("CCG server started in background (PID: %s)", strings.TrimSpace(string(pidData)))
+		} else {
+			log.Println("CCG server started in background")
+		}
+		return
+	}
+	
+	// Run in foreground
+	// Save PID to file first
+	if err := os.WriteFile(shared.PIDFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644); err != nil {
+		log.Printf("Warning: failed to write PID file: %v", err)
+	}
 	srv := server.New()
 	if err := srv.Start(); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}
 }
 
+func startUI() {
+	// Start server in background if not running
+	if !isRunning() {
+		log.Println("Starting CCG server...")
+		srv := server.New()
+		go func() {
+			if err := srv.Start(); err != nil {
+				log.Printf("Server error: %v", err)
+			}
+		}()
+		// Wait for server to start
+		time.Sleep(2 * time.Second)
+	}
+
+	// Open browser
+	url := "http://127.0.0.1:3456"
+	var cmd *exec.Cmd
+	if os.Getenv("WSL_DISTRO_NAME") != "" {
+		// Running in WSL, use wslview
+		cmd = exec.Command("wslview", url)
+	} else {
+		cmd = exec.Command("xdg-open", url)
+	}
+	if err := cmd.Start(); err != nil {
+		log.Printf("Failed to open browser: %v", err)
+		fmt.Printf("Please open %s in your browser\n", url)
+	} else {
+		fmt.Printf("Opening Web UI at %s...\n", url)
+	}
+}
+
 func stopServer() {
 	log.Println("Stopping CCG server...")
-	exec.Command("pkill", "-f", "ccg-server").Run()
+	
+	// Read PID from file
+	pidData, err := os.ReadFile(shared.PIDFile)
+	if err != nil {
+		log.Println("CCG server is not running (no PID file)")
+		return
+	}
+	
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
+	if err != nil {
+		log.Println("Invalid PID file")
+		os.Remove(shared.PIDFile)
+		return
+	}
+	
+	// Kill the process
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		log.Println("CCG server is not running")
+		os.Remove(shared.PIDFile)
+		return
+	}
+	
+	if err := process.Kill(); err != nil {
+		log.Printf("Failed to stop server: %v", err)
+	} else {
+		log.Println("CCG server stopped successfully")
+	}
+	
+	// Clean up PID file
+	os.Remove(shared.PIDFile)
 }
 
 func showStatus() {
@@ -331,16 +422,27 @@ func showVersion() {
 	fmt.Printf("CCG version %s\n", VERSION)
 }
 
-func runTUI() {
-	if err := tui.Run(); err != nil {
-		fmt.Printf("Error running TUI: %v\n", err)
-		os.Exit(1)
-	}
-}
-
 func isRunning() bool {
-	cmd := exec.Command("pgrep", "-f", "ccg-server")
-	return cmd.Run() == nil
+	// Check if PID file exists
+	pidData, err := os.ReadFile(shared.PIDFile)
+	if err != nil {
+		return false
+	}
+	
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
+	if err != nil {
+		return false
+	}
+	
+	// Check if process exists (signal 0 doesn't kill, just checks)
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	
+	// On Unix, signal 0 checks if process exists
+	err = process.Signal(syscall.Signal(0))
+	return err == nil
 }
 
 func toUpper(s string) string {

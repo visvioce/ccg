@@ -27,13 +27,32 @@ vendor/
 .DS_Store
 Thumbs.db
 
-# Config files with real data
+# Config files with real data (DO NOT COMMIT API KEYS)
 config.json
 *.local.json
+*.local
+config.local.*
+.ccg/
+~/.ccg/
 
 # Log files
 *.log
 logs/
+log/
+
+# PID files
+*.pid
+.pid
+
+# Credential files
+*.key
+*.pem
+*.p12
+*.pfx
+credentials.json
+secrets.json
+.token
+.apikey
 
 # Environment files
 .env

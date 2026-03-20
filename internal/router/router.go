@@ -10,6 +10,7 @@ import (
 	"github.com/musistudio/ccg/internal/cache"
 	"github.com/musistudio/ccg/internal/config"
 	"github.com/musistudio/ccg/internal/tokenizer"
+	"github.com/robertkrimen/otto"
 )
 
 const (
@@ -24,6 +25,7 @@ const (
 	ScenarioThink        ScenarioType = "think"
 	ScenarioLongContext ScenarioType = "longContext"
 	ScenarioWebSearch   ScenarioType = "webSearch"
+	ScenarioImage       ScenarioType = "image"
 )
 
 type RouterResult struct {
@@ -149,6 +151,13 @@ func (r *Router) Route(reqBody *tokenizer.RequestBody, sessionId string) *Router
 		}
 	}
 
+	if r.hasImage(reqBody) && router != nil && router.Image != "" {
+		return &RouterResult{
+			Model:    router.Image,
+			Scenario: ScenarioImage,
+		}
+	}
+
 	defaultModel := router.Default
 	if router == nil {
 		defaultModel = reqBody.Model
@@ -192,8 +201,23 @@ func (r *Router) extractSubagentModel(body *tokenizer.RequestBody) string {
 
 func (r *Router) hasWebSearch(body *tokenizer.RequestBody) bool {
 	for _, tool := range body.Tools {
-		if strings.HasPrefix(tool.Name, "web_search") {
+		if strings.HasPrefix(tool.Type, "web_search") {
 			return true
+		}
+	}
+	return false
+}
+
+func (r *Router) hasImage(body *tokenizer.RequestBody) bool {
+	for _, msg := range body.Messages {
+		if content, ok := msg.Content.([]any); ok {
+			for _, item := range content {
+				if itemMap, ok := item.(map[string]any); ok {
+					if itemType, ok := itemMap["type"].(string); ok && itemType == "image" {
+						return true
+					}
+				}
+			}
 		}
 	}
 	return false
@@ -245,10 +269,65 @@ func (r *Router) loadCustomRouter(path string, reqBody *tokenizer.RequestBody, s
 	}
 
 	code := string(data)
-	
-	_ = code
-	_ = reqBody
-	_ = sessionId
+
+	// 创建 JavaScript 虚拟机
+	vm := otto.New()
+
+	// 设置上下文对象
+	ctx := map[string]interface{}{
+		"model":     reqBody.Model,
+		"tokenCount": tokenizer.CountRequestTokens(reqBody),
+		"sessionId": sessionId,
+	}
+
+	// 将上下文转换为 JSON 以便传递给 JavaScript
+	ctxJSON, _ := json.Marshal(ctx)
+
+	// 构建完整的 JavaScript 代码
+	script := `
+		var context = ` + string(ctxJSON) + `;
+		var reqBody = context;
+		var sessionId = context.sessionId;
+
+		// 提供一个简单的日志函数
+		function log(msg) {
+			console.log(msg);
+		}
+
+		// 执行用户代码
+		` + code + `
+
+		// 返回结果
+		if (typeof route === 'function') {
+			route(context);
+		}
+
+		// 返回选中的模型
+		context.model || "";
+	`
+
+	// 执行 JavaScript
+	result, err := vm.Run(script)
+	if err != nil {
+		// JavaScript 执行错误，记录日志但不中断
+		return ""
+	}
+
+	// 获取返回值
+	if result.IsString() {
+		model, _ := result.ToString()
+		return model
+	}
+
+	// 检查 context 对象是否被修改
+	if val, err := vm.Get("context"); err == nil {
+		if obj := val.Object(); obj != nil {
+			if modelVal, err := obj.Get("model"); err == nil && modelVal.IsString() {
+				model, _ := modelVal.ToString()
+				return model
+			}
+		}
+	}
 
 	return ""
 }

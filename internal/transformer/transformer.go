@@ -33,11 +33,15 @@ func (r *TransformerRegistry) TransformRequest(reqBody map[string]any, provider 
 
 	providerLower := strings.ToLower(provider)
 
-	// 如果是Anthropic格式（有system字段或messages中的content是数组），默认转换为OpenAI格式
+	// 检测是否是Anthropic格式
 	isAnthropicFormat := false
+
+	// 1. 有system字段
 	if _, hasSystem := reqBody["system"]; hasSystem {
 		isAnthropicFormat = true
 	}
+
+	// 2. messages中的content是数组格式
 	if messages, ok := reqBody["messages"].([]any); ok && len(messages) > 0 {
 		if msg, ok := messages[0].(map[string]any); ok {
 			if content, ok := msg["content"]; ok {
@@ -48,22 +52,40 @@ func (r *TransformerRegistry) TransformRequest(reqBody map[string]any, provider 
 		}
 	}
 
+	// 3. 有tools字段（Anthropic格式的tools）
+	if _, hasTools := reqBody["tools"]; hasTools {
+		isAnthropicFormat = true
+	}
+
+	// 如果是Anthropic格式且provider是OpenAI兼容的，应用AnthropicToOpenAI转换
+	if isAnthropicFormat {
+		// 检查provider是否需要Anthropic到OpenAI的转换
+		openAICompatibleProviders := map[string]bool{
+			"iflow":      true,
+			"modelscope": true,
+			"nim":        true,
+			"gitcode":    true,
+			"openrouter": true,
+			"groq":       true,
+			"cerebras":   true,
+			"deepseek":   true,
+			"gemini":     true,
+			"google":     true,
+			"vercel":     true,
+			"openai":     true,
+		}
+
+		if openAICompatibleProviders[providerLower] {
+			if fn, ok := r.requestTransformers["anthropic"]; ok {
+				result = fn(result, provider)
+			}
+		}
+	}
+
 	// 应用指定的transforms
 	for _, t := range transforms {
 		tLower := strings.ToLower(t)
 		if fn, ok := r.requestTransformers[tLower]; ok {
-			result = fn(result, provider)
-		}
-	}
-
-	// 应用provider特定的transformer
-	if fn, ok := r.requestTransformers[providerLower]; ok {
-		result = fn(result, provider)
-	}
-
-	// 如果没有provider特定的transformer，且请求是Anthropic格式，默认应用AnthropicToOpenAI转换
-	if _, hasProviderTransform := r.requestTransformers[providerLower]; !hasProviderTransform && isAnthropicFormat {
-		if fn, ok := r.requestTransformers["anthropic"]; ok {
 			result = fn(result, provider)
 		}
 	}
@@ -92,7 +114,16 @@ func (r *TransformerRegistry) TransformResponse(respBody []byte, provider string
 func AnthropicToOpenAI(req map[string]any, _ string) map[string]any {
 	result := make(map[string]any)
 
-	if model, ok := req["model"].(string); ok {
+	// 提取实际的model名称（去掉provider前缀）
+	model := ""
+	if m, ok := req["model"].(string); ok {
+		model = m
+		if strings.Contains(model, ",") {
+			parts := strings.SplitN(model, ",", 2)
+			if len(parts) == 2 {
+				model = parts[1]
+			}
+		}
 		result["model"] = model
 	}
 
@@ -531,6 +562,7 @@ func OpenAIToAnthropicResponse(respBody []byte) []byte {
 func BuildDefaultRegistry() *TransformerRegistry {
 	registry := NewRegistry()
 
+	// Provider transformers
 	registry.RegisterRequest("anthropic", AnthropicToOpenAI)
 	registry.RegisterRequest("anthropic->openai", AnthropicToOpenAI)
 	registry.RegisterRequest("openai->anthropic", OpenAIToAnthropic)
@@ -541,8 +573,32 @@ func BuildDefaultRegistry() *TransformerRegistry {
 	registry.RegisterRequest("groq", GroqTransformer)
 	registry.RegisterRequest("vercel", VercelTransformer)
 	registry.RegisterRequest("openrouter", func(req map[string]any, _ string) map[string]any { return req })
-	registry.RegisterRequest("cerebras", func(req map[string]any, _ string) map[string]any { return req })
+	
+	// Cerebras transformer
+	cerebrasTransformer := NewCerebrasTransformer()
+	registry.RegisterRequest("cerebras", cerebrasTransformer.TransformRequest)
+	
+	// Vertex AI transformers
+	vertexClaudeTransformer := NewVertexClaudeTransformer()
+	registry.RegisterRequest("vertex-claude", vertexClaudeTransformer.TransformRequest)
+	
+	vertexGeminiTransformer := NewVertexGeminiTransformer()
+	registry.RegisterRequest("vertex-gemini", vertexGeminiTransformer.TransformRequest)
+	
+	// Additional provider transformers
+	sambanovaTransformer := NewSambanovaTransformer()
+	registry.RegisterRequest("sambanova", sambanovaTransformer.TransformRequest)
+	
+	hyperbolicTransformer := NewHyperbolicTransformer()
+	registry.RegisterRequest("hyperbolic", hyperbolicTransformer.TransformRequest)
+	
+	novitaTransformer := NewNovitaTransformer()
+	registry.RegisterRequest("novita", novitaTransformer.TransformRequest)
+	
+	fireworksTransformer := NewFireworksTransformer()
+	registry.RegisterRequest("fireworks", fireworksTransformer.TransformRequest)
 
+	// Utility transformers
 	registry.RegisterRequest("maxtoken", MaxTokenTransformer)
 	registry.RegisterRequest("maxcompletiontokens", MaxCompletionTokensTransformer)
 	registry.RegisterRequest("forcereasoning", ForceReasoningTransformer)
@@ -552,7 +608,7 @@ func BuildDefaultRegistry() *TransformerRegistry {
 	registry.RegisterRequest("enhancetool", EnhanceToolTransformer)
 	registry.RegisterRequest("customparams", CustomParamsTransformer)
 
-	// 注册response transformers
+	// Response transformers
 	registry.RegisterResponse("openai->anthropic", OpenAIToAnthropicResponse)
 
 	return registry

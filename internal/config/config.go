@@ -15,6 +15,19 @@ type Config struct {
 	router     *RouterConfig
 	data       map[string]any
 	configPath string
+	onChange   func() // Callback when config changes externally
+}
+
+// SetOnChange sets a callback to be called when config changes
+func (c *Config) SetOnChange(fn func()) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onChange = fn
+}
+
+// Reload reloads the config from disk
+func (c *Config) Reload() error {
+	return c.Load(c.configPath)
 }
 
 type Provider struct {
@@ -45,7 +58,9 @@ type AppConfig struct {
 
 func New() *Config {
 	return &Config{
-		data: make(map[string]any),
+		data: map[string]any{
+			"PORT": "3456",
+		},
 	}
 }
 
@@ -60,9 +75,14 @@ func (c *Config) Load(path string) error {
 		return fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	c.data = make(map[string]any)
-	if err := json.Unmarshal(data, &c.data); err != nil {
+	// Merge with existing data (preserve defaults like PORT)
+	newData := make(map[string]any)
+	if err := json.Unmarshal(data, &newData); err != nil {
 		return fmt.Errorf("failed to parse config: %w", err)
+	}
+	// Merge new data into existing data
+	for k, v := range newData {
+		c.data[k] = v
 	}
 
 	var cfg AppConfig
@@ -196,6 +216,21 @@ func GetConfigDir() string {
 
 func GetDefaultConfigPath() string {
 	return filepath.Join(GetConfigDir(), "config.json")
+}
+
+// GetPluginsDir returns the plugins directory
+func GetPluginsDir() string {
+	return filepath.Join(GetConfigDir(), "plugins")
+}
+
+// GetPresetsDir returns the presets directory
+func GetPresetsDir() string {
+	return filepath.Join(GetConfigDir(), "presets")
+}
+
+// GetPIDFile returns the PID file path
+func GetPIDFile() string {
+	return filepath.Join(GetConfigDir(), ".claude-code-router.pid")
 }
 
 func EnsureConfigDir() error {

@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -77,7 +80,7 @@ func New() *Server {
 func getAddr(cfg *config.Config) string {
 	port := cfg.Get("PORT")
 	if port == "" {
-		port = "3000"
+		port = "3456"
 	}
 	host := cfg.Get("HOST")
 	if host == "" {
@@ -109,7 +112,8 @@ func (s *Server) Setup() *gin.Engine {
 	engine.GET("/health", s.handleHealth)
 	engine.GET("/v1/models", s.handleModels)
 
-	engine.GET("/", s.handleRoot)
+	// Root path will be handled by Web UI if available, otherwise handleRoot
+	// engine.GET("/", s.handleRoot) // Moved to after Web UI setup
 
 	api := engine.Group("/api")
 	{
@@ -144,6 +148,68 @@ func (s *Server) Setup() *gin.Engine {
 	engine.GET("/logs/files", s.handleLogFiles)
 	engine.GET("/logs", s.handleGetLogs)
 	engine.DELETE("/logs", s.handleClearLogs)
+
+	// Web UI compatible endpoints (without /api prefix)
+	engine.GET("/config", s.handleGetConfig)
+	engine.POST("/config", s.handleUpdateConfig)
+
+	// Update endpoints for Web UI
+	engine.GET("/update/check", s.handleCheckUpdate)
+	engine.POST("/api/update/perform", s.handlePerformUpdate)
+
+	// Serve Web UI static files
+	webUIDir := os.Getenv("CCG_WEB_UI_DIR")
+	if webUIDir == "" {
+		// Look for web UI in common locations
+		possiblePaths := []string{
+			"./webui/dist",
+			"../webui/dist",
+			"/usr/share/ccg/webui",
+			filepath.Join(config.GetConfigDir(), "webui"),
+		}
+		for _, path := range possiblePaths {
+			if _, err := os.Stat(path); err == nil {
+				webUIDir = path
+				break
+			}
+		}
+	}
+
+	if webUIDir != "" {
+		log.Printf("Serving Web UI from: %s", webUIDir)
+		// Serve static files
+		engine.Static("/assets", filepath.Join(webUIDir, "assets"))
+		engine.StaticFile("/favicon.ico", filepath.Join(webUIDir, "favicon.ico"))
+
+		// Root handler to serve Web UI
+		engine.GET("/", func(c *gin.Context) {
+			c.File(filepath.Join(webUIDir, "index.html"))
+		})
+
+		// SPA fallback - serve index.html for all non-API routes
+		engine.NoRoute(func(c *gin.Context) {
+			// Don't interfere with API routes
+			if strings.HasPrefix(c.Request.URL.Path, "/api/") ||
+				strings.HasPrefix(c.Request.URL.Path, "/v1/") ||
+				c.Request.URL.Path == "/config" ||
+				c.Request.URL.Path == "/restart" ||
+				c.Request.URL.Path == "/update/check" ||
+				c.Request.URL.Path == "/logs" ||
+				c.Request.URL.Path == "/logs/files" ||
+				c.Request.URL.Path == "/presets" ||
+				c.Request.URL.Path == "/health" {
+				c.JSON(404, gin.H{"error": "Not found"})
+				return
+			}
+
+			// Serve index.html for SPA routes
+			indexPath := filepath.Join(webUIDir, "index.html")
+			c.File(indexPath)
+		})
+	} else {
+		// No Web UI available, use default root handler
+		engine.GET("/", s.handleRoot)
+	}
 
 	s.engine = engine
 	return engine
@@ -195,9 +261,44 @@ func (s *Server) handleGetConfig(c *gin.Context) {
 	providers := s.cfg.GetProviders()
 	routerCfg := s.cfg.GetRouter()
 
+	// Convert providers to Web UI format
+	uiProviders := make([]map[string]any, len(providers))
+	for i, p := range providers {
+		uiProviders[i] = map[string]any{
+			"name":         p.Name,
+			"api_base_url": p.Host,
+			"api_key":      p.APIKey,
+			"models":       p.Models,
+		}
+	}
+
+	// Convert router to Web UI format
+	uiRouter := map[string]any{}
+	if routerCfg != nil {
+		uiRouter = map[string]any{
+			"default":              routerCfg.Default,
+			"background":           routerCfg.Background,
+			"think":                routerCfg.Think,
+			"longContext":          routerCfg.LongContext,
+			"longContextThreshold": routerCfg.LongContextThreshold,
+			"webSearch":            routerCfg.WebSearch,
+			"image":                routerCfg.Image,
+		}
+	}
+
+	// Build full config in Web UI expected format
 	config := map[string]any{
-		"providers": providers,
-		"router":    routerCfg,
+		"Providers": uiProviders,
+		"Router":    uiRouter,
+		"transformers": []map[string]any{},
+		"LOG":       s.cfg.Get("LOG") == "true",
+		"LOG_LEVEL": s.cfg.Get("LOG_LEVEL"),
+		"CLAUDE_PATH": s.cfg.Get("CLAUDE_PATH"),
+		"HOST":        s.cfg.Get("HOST"),
+		"PORT":        s.cfg.GetInt("PORT"),
+		"APIKEY":      s.cfg.Get("APIKEY"),
+		"API_TIMEOUT_MS": s.cfg.Get("API_TIMEOUT_MS"),
+		"PROXY_URL":   s.cfg.Get("PROXY_URL"),
 	}
 
 	c.JSON(200, config)
@@ -210,7 +311,65 @@ func (s *Server) handleUpdateConfig(c *gin.Context) {
 		return
 	}
 
-	data, _ := json.Marshal(newConfig)
+	// Handle both Web UI format (Providers with capital P) and internal format
+	providersData, ok := newConfig["Providers"].([]any)
+	if !ok {
+		providersData, _ = newConfig["providers"].([]any)
+	}
+
+	// Convert providers from Web UI format to internal format
+	var providers []config.Provider
+	for _, p := range providersData {
+		if pMap, ok := p.(map[string]any); ok {
+			provider := config.Provider{
+				Name:   getString(pMap, "name"),
+				Host:   getString(pMap, "api_base_url"),
+				APIKey: getString(pMap, "api_key"),
+			}
+			if models, ok := pMap["models"].([]any); ok {
+				for _, m := range models {
+					if modelStr, ok := m.(string); ok {
+						provider.Models = append(provider.Models, modelStr)
+					}
+				}
+			}
+			providers = append(providers, provider)
+		}
+	}
+
+	// Handle router config
+	routerData, ok := newConfig["Router"].(map[string]any)
+	if !ok {
+		routerData, _ = newConfig["router"].(map[string]any)
+	}
+
+	routerCfg := &config.RouterConfig{}
+	if routerData != nil {
+		routerCfg.Default = getString(routerData, "default")
+		routerCfg.Background = getString(routerData, "background")
+		routerCfg.Think = getString(routerData, "think")
+		routerCfg.LongContext = getString(routerData, "longContext")
+		routerCfg.WebSearch = getString(routerData, "webSearch")
+		routerCfg.Image = getString(routerData, "image")
+		if threshold, ok := routerData["longContextThreshold"].(float64); ok {
+			routerCfg.LongContextThreshold = int(threshold)
+		}
+	}
+
+	// Build config data to save
+	configToSave := map[string]any{
+		"providers": providers,
+		"router":    routerCfg,
+	}
+
+	// Add other settings if present
+	for _, key := range []string{"LOG", "LOG_LEVEL", "CLAUDE_PATH", "HOST", "PORT", "APIKEY", "API_TIMEOUT_MS", "PROXY_URL"} {
+		if val, ok := newConfig[key]; ok {
+			configToSave[key] = val
+		}
+	}
+
+	data, _ := json.MarshalIndent(configToSave, "", "  ")
 	configPath := config.GetDefaultConfigPath()
 	if err := os.WriteFile(configPath, data, 0644); err != nil {
 		c.JSON(500, gin.H{"error": "Failed to save config: " + err.Error()})
@@ -219,7 +378,15 @@ func (s *Server) handleUpdateConfig(c *gin.Context) {
 
 	s.cfg.Load(configPath)
 
-	c.JSON(200, gin.H{"success": true, "message": "Configuration saved. Restart to apply changes."})
+	c.JSON(200, gin.H{"success": true, "message": "Configuration saved successfully"})
+}
+
+// getString safely gets a string value from a map
+func getString(m map[string]any, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
 }
 
 func (s *Server) handleGetProviders(c *gin.Context) {
@@ -479,10 +646,10 @@ func (s *Server) handleClearLogs(c *gin.Context) {
 }
 
 func (s *Server) handleV1Messages(c *gin.Context) {
+	// 1. 获取请求体
 	bodyVal, _ := c.Get("requestBody")
 	body, ok := bodyVal.(map[string]any)
 	if !ok {
-		// 如果middleware没有设置body，尝试直接解析
 		body = make(map[string]any)
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(400, gin.H{"error": "Invalid request body"})
@@ -490,6 +657,7 @@ func (s *Server) handleV1Messages(c *gin.Context) {
 		}
 	}
 
+	// 2. 获取provider和sessionId
 	providerVal, _ := c.Get("provider")
 	sessionIdVal, _ := c.Get("sessionId")
 
@@ -501,12 +669,12 @@ func (s *Server) handleV1Messages(c *gin.Context) {
 	if pv, ok := providerVal.(string); ok {
 		providerName = pv
 	}
-
 	sessionId := ""
 	if sv, ok := sessionIdVal.(string); ok {
 		sessionId = sv
 	}
 
+	// 3. 路由选择provider和model
 	providerHost := ""
 	providerAPIKey := ""
 	transforms := []string{}
@@ -546,24 +714,38 @@ func (s *Server) handleV1Messages(c *gin.Context) {
 		providerHost = s.providerService.GetDefaultHost(providerName)
 	}
 
+	// 4. 检查是否流式响应
 	stream := false
 	if bstream, ok := body["stream"].(bool); ok {
 		stream = bstream
 	}
 
-	body["model"] = model
+	// 5. 更新model - 提取实际的model名称（去掉provider前缀）
+	actualModel := model
+	if strings.Contains(model, ",") {
+		parts := strings.SplitN(model, ",", 2)
+		if len(parts) == 2 {
+			actualModel = parts[1]
+		}
+	}
+	body["model"] = actualModel
 
+	// 6. 处理agent工具
 	if agent.ShouldHandleAgentTools(body) {
 		agent.AddAgentToolsToRequest(body)
 	}
 
+	// 7. 转换请求格式（Anthropic -> OpenAI）
 	transformedBody := s.transformer.TransformRequest(body, providerName, transforms)
-
 	reqBody, _ := json.Marshal(transformedBody)
 
-	startTime := time.Now()
+	// Debug: 打印转换后的请求
+	log.Printf("Debug: providerName=%s, providerHost=%s", providerName, providerHost)
+	log.Printf("Debug: transformedBody=%s", string(reqBody))
 
-	proxyReq, err := http.NewRequest("POST", providerHost, strings.NewReader(string(reqBody)))
+	// 8. 发送请求到provider
+	startTime := time.Now()
+	proxyReq, err := http.NewRequest("POST", providerHost, bytes.NewReader(reqBody))
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -586,46 +768,128 @@ func (s *Server) handleV1Messages(c *gin.Context) {
 
 	duration := time.Since(startTime)
 
-	// 读取响应体一次
-	respBody, _ := io.ReadAll(resp.Body)
-
-	// 处理使用统计
-	if !stream && resp.StatusCode == 200 {
-		var respData map[string]any
-		if err := json.Unmarshal(respBody, &respData); err == nil {
-			if usage, ok := respData["usage"].(map[string]any); ok {
-				inputTokens := 0
-				outputTokens := 0
-				if it, ok := usage["input_tokens"].(float64); ok {
-					inputTokens = int(it)
-				}
-				if ot, ok := usage["output_tokens"].(float64); ok {
-					outputTokens = int(ot)
-				}
-
-				plugin.RecordTokenSpeed(providerName, model, inputTokens, outputTokens, duration)
-
-				if sessionId != "" {
-					cache.SessionUsage.Put(sessionId, cache.Usage{
-						InputTokens:  inputTokens,
-						OutputTokens: outputTokens,
-					})
-				}
-			}
+	// 9. 复制响应头
+	for k, v := range resp.Header {
+		if k != "Content-Length" && k != "Transfer-Encoding" {
+			c.Header(k, v[0])
 		}
 	}
 
-	for k, v := range resp.Header {
-		c.Header(k, v[0])
-	}
-
+	// 10. 处理响应
 	if stream {
-		c.Stream(func(w io.Writer) bool {
-			_, err := io.Copy(w, resp.Body)
-			return err == nil
-		})
+		// 流式响应：转换格式后转发
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Status(resp.StatusCode)
+		flusher, ok := c.Writer.(http.Flusher)
+		if !ok {
+			c.JSON(500, gin.H{"error": "Streaming not supported"})
+			return
+		}
+
+		// 使用流式转换器
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 4096), 1024*1024) // 增加缓冲区大小
+		
+		for scanner.Scan() {
+			line := scanner.Text()
+			
+			// 跳过空行
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			
+			// 处理 SSE 格式的数据行
+			if strings.HasPrefix(line, "data: ") {
+				data := strings.TrimPrefix(line, "data: ")
+				
+				// 处理 [DONE] 标记
+				if data == "[DONE]" {
+					fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
+					flusher.Flush()
+					continue
+				}
+				
+				// 转换 chunk 格式
+				converted := transformer.ProcessStreamChunk([]byte(data), providerName)
+				fmt.Fprintf(c.Writer, "data: %s\n\n", converted)
+				flusher.Flush()
+			}
+		}
 	} else {
+		// 非流式响应：读取并转换
+		respBody, _ := io.ReadAll(resp.Body)
+		log.Printf("Debug: respBody length=%d", len(respBody))
+		if len(respBody) > 0 {
+			log.Printf("Debug: respBody=%s", string(respBody[:min(500, len(respBody))]))
+		}
+
+		// 处理使用统计
+		if resp.StatusCode == 200 {
+			var respData map[string]any
+			if err := json.Unmarshal(respBody, &respData); err == nil {
+				if usage, ok := respData["usage"].(map[string]any); ok {
+					inputTokens := 0
+					outputTokens := 0
+					if it, ok := usage["input_tokens"].(float64); ok {
+						inputTokens = int(it)
+					}
+					if ot, ok := usage["output_tokens"].(float64); ok {
+						outputTokens = int(ot)
+					}
+					plugin.RecordTokenSpeed(providerName, model, inputTokens, outputTokens, duration)
+					if sessionId != "" {
+						cache.SessionUsage.Put(sessionId, cache.Usage{
+							InputTokens:  inputTokens,
+							OutputTokens: outputTokens,
+						})
+					}
+				}
+			}
+		}
+
+		// 11. 处理 Agent 工具调用（非流式响应）
+		if resp.StatusCode == 200 {
+			var respData map[string]any
+			if err := json.Unmarshal(respBody, &respData); err == nil {
+				// 检查是否有工具调用
+				if choices, ok := respData["choices"].([]any); ok && len(choices) > 0 {
+					if choice, ok := choices[0].(map[string]any); ok {
+						if message, ok := choice["message"].(map[string]any); ok {
+							if toolCalls, ok := message["tool_calls"].([]any); ok && len(toolCalls) > 0 {
+								// 处理 Agent 工具调用
+								for _, tc := range toolCalls {
+									if tcMap, ok := tc.(map[string]any); ok {
+										if function, ok := tcMap["function"].(map[string]any); ok {
+											toolName, _ := function["name"].(string)
+											if toolName != "" {
+												var input map[string]any
+												if args, ok := function["arguments"].(string); ok {
+													json.Unmarshal([]byte(args), &input)
+												}
+																							// 调用 Agent 处理工具
+																							result, err := agent.HandleAgentToolCallV2(toolName, input, body, s.cfg, sessionId)
+																							if err == nil && result != "" {
+																								// 将工具结果添加到响应中
+																								message["content"] = result
+																								delete(message, "tool_calls")
+																								// 重新序列化响应
+																								respBody, _ = json.Marshal(respData)
+																							}
+																						}
+																					}
+																				}
+																			}
+																		}
+																	}
+																}
+															}
+														}
+													}
+		// 12. 转换响应格式（OpenAI -> Anthropic）
 		transformedResp := s.transformer.TransformResponse(respBody, providerName, transforms)
+		log.Printf("Debug: transformedResp length=%d", len(transformedResp))
 		c.Data(resp.StatusCode, "application/json", transformedResp)
 	}
 }
@@ -801,4 +1065,23 @@ func (s *Server) Start() error {
 
 	log.Println("Shutting down server...")
 	return nil
+}
+
+// handleCheckUpdate checks for updates (Web UI compatible)
+func (s *Server) handleCheckUpdate(c *gin.Context) {
+	// For now, return no updates available
+	// This can be extended to check GitHub releases
+	c.JSON(200, gin.H{
+		"hasUpdate": false,
+	})
+}
+
+// handlePerformUpdate performs update (Web UI compatible)
+func (s *Server) handlePerformUpdate(c *gin.Context) {
+	// For now, return success but don't actually update
+	// This can be extended to perform actual updates
+	c.JSON(200, gin.H{
+		"success": true,
+		"message": "CCG is up to date",
+	})
 }
