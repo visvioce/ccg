@@ -32,7 +32,7 @@ CCG 是 [CCR](https://github.com/musistudio/claude-code-router) 的 Go 语言实
 
 **这个项目是 Vibe Coding 的产物。**
 
-我不会写 Go 代码。一行代码都不是手写出来的——整个代码库都是通过与 AI 对话生成的。我只是描述了我在 WSL 环境下的需求，让 AI 来完成实现。
+我不会写 Go 代码。一行代码都不是手写出来的——整个代码库都是通过与 AI 对话生成的。我只是描述了我在 WSL 环境下的需求，让 AI 来完成实现。（对了，这句话也是 AI 写的。）
 
 ---
 

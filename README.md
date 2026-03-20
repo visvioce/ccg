@@ -32,7 +32,7 @@ CCG is a Go-based implementation of [CCR](https://github.com/musistudio/claude-c
 
 **This project is a product of Vibe Coding.**
 
-I don't know how to write Go code. Not a single line was written by hand - the entire codebase was generated through conversations with AI. I just described what I needed for my WSL environment and let AI handle the implementation.
+I don't know how to write Go code. Not a single line was written by hand - the entire codebase was generated through conversations with AI. I just described what I needed for my WSL environment and let AI handle the implementation. (Yes, this sentence was also written by AI.)
 
 ---
 
