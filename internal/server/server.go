@@ -22,8 +22,8 @@ import (
 	"github.com/musistudio/ccg/internal/preset"
 	"github.com/musistudio/ccg/internal/provider"
 	"github.com/musistudio/ccg/internal/router"
-	"github.com/musistudio/ccg/internal/transformer"
 	"github.com/musistudio/ccg/internal/tokenizer"
+	"github.com/musistudio/ccg/internal/transformer"
 )
 
 type Server struct {
@@ -177,10 +177,10 @@ func (s *Server) handleModels(c *gin.Context) {
 	for _, p := range providers {
 		for _, m := range p.Models {
 			models = append(models, map[string]any{
-				"id":         p.Name + "," + m,
-				"object":     "model",
-				"owned_by":   p.Name,
-				"provider":   p.Name,
+				"id":       p.Name + "," + m,
+				"object":   "model",
+				"owned_by": p.Name,
+				"provider": p.Name,
 			})
 		}
 	}
@@ -197,7 +197,7 @@ func (s *Server) handleGetConfig(c *gin.Context) {
 
 	config := map[string]any{
 		"providers": providers,
-		"router":   routerCfg,
+		"router":    routerCfg,
 	}
 
 	c.JSON(200, config)
@@ -482,14 +482,21 @@ func (s *Server) handleV1Messages(c *gin.Context) {
 	bodyVal, _ := c.Get("requestBody")
 	body, ok := bodyVal.(map[string]any)
 	if !ok {
-		c.JSON(400, gin.H{"error": "Invalid request body"})
-		return
+		// 如果middleware没有设置body，尝试直接解析
+		body = make(map[string]any)
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(400, gin.H{"error": "Invalid request body"})
+			return
+		}
 	}
 
 	providerVal, _ := c.Get("provider")
 	sessionIdVal, _ := c.Get("sessionId")
 
-	model := body["model"].(string)
+	model := ""
+	if m, ok := body["model"].(string); ok {
+		model = m
+	}
 	providerName := ""
 	if pv, ok := providerVal.(string); ok {
 		providerName = pv
@@ -579,10 +586,13 @@ func (s *Server) handleV1Messages(c *gin.Context) {
 
 	duration := time.Since(startTime)
 
+	// 读取响应体一次
+	respBody, _ := io.ReadAll(resp.Body)
+
+	// 处理使用统计
 	if !stream && resp.StatusCode == 200 {
 		var respData map[string]any
-		if bodyBytes, err := io.ReadAll(resp.Body); err == nil {
-			json.Unmarshal(bodyBytes, &respData)
+		if err := json.Unmarshal(respBody, &respData); err == nil {
 			if usage, ok := respData["usage"].(map[string]any); ok {
 				inputTokens := 0
 				outputTokens := 0
@@ -615,7 +625,6 @@ func (s *Server) handleV1Messages(c *gin.Context) {
 			return err == nil
 		})
 	} else {
-		respBody, _ := io.ReadAll(resp.Body)
 		transformedResp := s.transformer.TransformResponse(respBody, providerName, transforms)
 		c.Data(resp.StatusCode, "application/json", transformedResp)
 	}

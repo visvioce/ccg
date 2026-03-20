@@ -33,6 +33,22 @@ func (r *TransformerRegistry) TransformRequest(reqBody map[string]any, provider 
 
 	providerLower := strings.ToLower(provider)
 
+	// 如果是Anthropic格式（有system字段或messages中的content是数组），默认转换为OpenAI格式
+	isAnthropicFormat := false
+	if _, hasSystem := reqBody["system"]; hasSystem {
+		isAnthropicFormat = true
+	}
+	if messages, ok := reqBody["messages"].([]any); ok && len(messages) > 0 {
+		if msg, ok := messages[0].(map[string]any); ok {
+			if content, ok := msg["content"]; ok {
+				if _, isArray := content.([]any); isArray {
+					isAnthropicFormat = true
+				}
+			}
+		}
+	}
+
+	// 应用指定的transforms
 	for _, t := range transforms {
 		tLower := strings.ToLower(t)
 		if fn, ok := r.requestTransformers[tLower]; ok {
@@ -40,8 +56,16 @@ func (r *TransformerRegistry) TransformRequest(reqBody map[string]any, provider 
 		}
 	}
 
+	// 应用provider特定的transformer
 	if fn, ok := r.requestTransformers[providerLower]; ok {
 		result = fn(result, provider)
+	}
+
+	// 如果没有provider特定的transformer，且请求是Anthropic格式，默认应用AnthropicToOpenAI转换
+	if _, hasProviderTransform := r.requestTransformers[providerLower]; !hasProviderTransform && isAnthropicFormat {
+		if fn, ok := r.requestTransformers["anthropic"]; ok {
+			result = fn(result, provider)
+		}
 	}
 
 	return result
@@ -50,17 +74,16 @@ func (r *TransformerRegistry) TransformRequest(reqBody map[string]any, provider 
 func (r *TransformerRegistry) TransformResponse(respBody []byte, provider string, transforms []string) []byte {
 	result := respBody
 
-	providerLower := strings.ToLower(provider)
-
-	for _, t := range transforms {
-		tLower := strings.ToLower(t)
-		if fn, ok := r.responseTransformers[tLower]; ok {
-			result = fn(result)
+	// 检查是否需要将OpenAI格式转换为Anthropic格式
+	// 如果响应包含OpenAI格式的字段（choices），则转换为Anthropic格式
+	var respData map[string]any
+	if err := json.Unmarshal(respBody, &respData); err == nil {
+		if _, hasChoices := respData["choices"]; hasChoices {
+			// 这是OpenAI格式，转换为Anthropic格式
+			if fn, ok := r.responseTransformers["openai->anthropic"]; ok {
+				result = fn(result)
+			}
 		}
-	}
-
-	if fn, ok := r.responseTransformers[providerLower]; ok {
-		result = fn(result)
 	}
 
 	return result
@@ -73,12 +96,15 @@ func AnthropicToOpenAI(req map[string]any, _ string) map[string]any {
 		result["model"] = model
 	}
 
-	if messages, ok := req["messages"].([]any); ok {
-		result["messages"] = transformAnthropicMessages(messages)
-	}
+	// 转换messages，同时处理system消息
+	var messages []any
 
-	if system, ok := req["system"].(string); ok {
-		result["system_message"] = system
+	// 处理system消息 - Anthropic的system字段需要转换为OpenAI的messages中的system角色
+	if system, ok := req["system"].(string); ok && system != "" {
+		messages = append(messages, map[string]any{
+			"role":    "system",
+			"content": system,
+		})
 	} else if system, ok := req["system"].([]any); ok {
 		var sysContent []string
 		for _, s := range system {
@@ -90,11 +116,25 @@ func AnthropicToOpenAI(req map[string]any, _ string) map[string]any {
 				}
 			}
 		}
-		result["system_message"] = strings.Join(sysContent, "\n")
+		if len(sysContent) > 0 {
+			messages = append(messages, map[string]any{
+				"role":    "system",
+				"content": strings.Join(sysContent, "\n"),
+			})
+		}
 	}
+
+	if reqMessages, ok := req["messages"].([]any); ok {
+		transformedMessages := transformAnthropicMessages(reqMessages)
+		messages = append(messages, transformedMessages...)
+	}
+
+	result["messages"] = messages
 
 	if maxTokens, ok := req["max_tokens"].(float64); ok {
 		result["max_tokens"] = int(maxTokens)
+	} else if maxTokens, ok := req["max_tokens"].(int); ok {
+		result["max_tokens"] = maxTokens
 	}
 
 	if stream, ok := req["stream"].(bool); ok {
@@ -316,7 +356,7 @@ func EnhanceToolTransformer(req map[string]any, _ string) map[string]any {
 				if fn, ok := tool["function"].(map[string]any); ok {
 					if _, ok := fn["parameters"]; !ok {
 						fn["parameters"] = map[string]any{
-							"type": "object",
+							"type":       "object",
 							"properties": map[string]any{},
 						}
 					}
@@ -398,6 +438,96 @@ func CustomParamsTransformer(req map[string]any, _ string) map[string]any {
 	return req
 }
 
+func OpenAIToAnthropicResponse(respBody []byte) []byte {
+	var openaiResp map[string]any
+	if err := json.Unmarshal(respBody, &openaiResp); err != nil {
+		return respBody
+	}
+
+	anthropicResp := make(map[string]any)
+
+	if id, ok := openaiResp["id"].(string); ok {
+		anthropicResp["id"] = id
+	}
+
+	anthropicResp["type"] = "message"
+	anthropicResp["role"] = "assistant"
+
+	if model, ok := openaiResp["model"].(string); ok {
+		anthropicResp["model"] = model
+	}
+
+	// 转换choices到content
+	content := []any{}
+	stopReason := "end_turn"
+
+	if choices, ok := openaiResp["choices"].([]any); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]any); ok {
+			if message, ok := choice["message"].(map[string]any); ok {
+				if text, ok := message["content"].(string); ok && text != "" {
+					content = append(content, map[string]any{
+						"type": "text",
+						"text": text,
+					})
+				}
+
+				// 处理tool_calls
+				if toolCalls, ok := message["tool_calls"].([]any); ok {
+					for _, tc := range toolCalls {
+						if toolCall, ok := tc.(map[string]any); ok {
+							toolUse := map[string]any{
+								"type": "tool_use",
+								"id":   toolCall["id"],
+							}
+							if fn, ok := toolCall["function"].(map[string]any); ok {
+								toolUse["name"] = fn["name"]
+								var input map[string]any
+								if args, ok := fn["arguments"].(string); ok {
+									json.Unmarshal([]byte(args), &input)
+								}
+								if input == nil {
+									input = make(map[string]any)
+								}
+								toolUse["input"] = input
+							}
+							content = append(content, toolUse)
+						}
+					}
+				}
+			}
+
+			// 处理finish_reason
+			if finishReason, ok := choice["finish_reason"].(string); ok {
+				switch finishReason {
+				case "stop":
+					stopReason = "end_turn"
+				case "length":
+					stopReason = "max_tokens"
+				case "tool_calls":
+					stopReason = "tool_use"
+				default:
+					stopReason = "end_turn"
+				}
+			}
+		}
+	}
+
+	anthropicResp["content"] = content
+	anthropicResp["stop_reason"] = stopReason
+	anthropicResp["stop_sequence"] = nil
+
+	// 转换usage
+	if usage, ok := openaiResp["usage"].(map[string]any); ok {
+		anthropicResp["usage"] = map[string]any{
+			"input_tokens":  usage["prompt_tokens"],
+			"output_tokens": usage["completion_tokens"],
+		}
+	}
+
+	result, _ := json.Marshal(anthropicResp)
+	return result
+}
+
 func BuildDefaultRegistry() *TransformerRegistry {
 	registry := NewRegistry()
 
@@ -421,6 +551,9 @@ func BuildDefaultRegistry() *TransformerRegistry {
 	registry.RegisterRequest("cleancache", CleanCacheTransformer)
 	registry.RegisterRequest("enhancetool", EnhanceToolTransformer)
 	registry.RegisterRequest("customparams", CustomParamsTransformer)
+
+	// 注册response transformers
+	registry.RegisterResponse("openai->anthropic", OpenAIToAnthropicResponse)
 
 	return registry
 }

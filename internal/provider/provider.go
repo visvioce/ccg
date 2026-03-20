@@ -51,7 +51,7 @@ func (s *ProviderService) ForwardRequest(providerName, model string, reqBody []b
 	processedBody, _ := json.Marshal(transformedBody)
 
 	url := providerHost
-	if !strings.HasSuffix(url, "/v1/messages") && !strings.HasSuffix(url, "/chat/completions") {
+	if !strings.HasSuffix(url, "/v1/messages") && !strings.HasSuffix(url, "/v1/chat/completions") {
 		url = strings.TrimRight(url, "/")
 		url += "/v1/messages"
 	}
@@ -102,21 +102,21 @@ func (s *ProviderService) ForwardRequest(providerName, model string, reqBody []b
 
 func (s *ProviderService) GetDefaultHost(providerName string) string {
 	hosts := map[string]string{
-		"openai":        "https://api.openai.com/v1/chat/completions",
-		"anthropic":    "https://api.anthropic.com/v1/messages",
-		"deepseek":      "https://api.deepseek.com/v1/chat/completions",
-		"google":        "https://generativelanguage.googleapis.com/v1beta/models",
-		"groq":          "https://api.groq.com/openai/v1/chat/completions",
-		"openrouter":    "https://openrouter.ai/api/v1/chat/completions",
-		"cerebras":     "https://api.cerebras.ai/v1/chat/completions",
-		"anyscale":     "https://api.endpoints.anyscale.com/v1/chat/completions",
-		"azure":         "https://{resource}.openai.azure.com/openai/deployments/{deployment}/chat/completions",
-		"vertex":        "https://{region}-aiplatform.googleapis.com/v1/{project}/locations/{region}/publishers/anthropic/models/{model}:predict",
-		"iflow":         "https://apis.iflow.cn/v1/chat/completions",
-		"modelscope":    "https://api-inference.modelscope.cn/v1/chat/completions",
-		"NIM":           "https://integrate.api.nvidia.com/v1/chat/completions",
-		"shusheng":      "https://chat.intern-ai.org.cn/api/v1/chat/completions",
-		"gitcode":       "https://api-ai.gitcode.com/v1/chat/completions",
+		"openai":     "https://api.openai.com/v1/chat/completions",
+		"anthropic":  "https://api.anthropic.com/v1/messages",
+		"deepseek":   "https://api.deepseek.com/v1/chat/completions",
+		"google":     "https://generativelanguage.googleapis.com/v1beta/models",
+		"groq":       "https://api.groq.com/openai/v1/chat/completions",
+		"openrouter": "https://openrouter.ai/api/v1/chat/completions",
+		"cerebras":   "https://api.cerebras.ai/v1/chat/completions",
+		"anyscale":   "https://api.endpoints.anyscale.com/v1/chat/completions",
+		"azure":      "https://{resource}.openai.azure.com/openai/deployments/{deployment}/chat/completions",
+		"vertex":     "https://{region}-aiplatform.googleapis.com/v1/{project}/locations/{region}/publishers/anthropic/models/{model}:predict",
+		"iflow":      "https://apis.iflow.cn/v1/chat/completions",
+		"modelscope": "https://api-inference.modelscope.cn/v1/chat/completions",
+		"NIM":        "https://integrate.api.nvidia.com/v1/chat/completions",
+		"shusheng":   "https://chat.intern-ai.org.cn/api/v1/chat/completions",
+		"gitcode":    "https://api-ai.gitcode.com/v1/chat/completions",
 	}
 
 	lower := strings.ToLower(providerName)
@@ -128,12 +128,12 @@ func (s *ProviderService) GetDefaultHost(providerName string) string {
 
 func (s *ProviderService) GetDefaultTransforms(providerName string) []string {
 	transforms := map[string][]string{
-		"anthropic":    {"anthropic->openai"},
-		"deepseek":     {},
-		"google":       {},
-		"groq":         {},
-		"openrouter":   {},
-		"cerebras":     {},
+		"anthropic":  {"anthropic->openai"},
+		"deepseek":   {},
+		"google":     {},
+		"groq":       {},
+		"openrouter": {},
+		"cerebras":   {},
 	}
 
 	lower := strings.ToLower(providerName)
