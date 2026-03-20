@@ -28,6 +28,26 @@ CCG is a Go-based implementation of [CCR](https://github.com/musistudio/claude-c
 
 ---
 
+## The Story Behind CCG
+
+**This project is a product of Vibe Coding.**
+
+The author of this project doesn't know how to write code. Seriously. Not a single line of Go was written by hand. The entire codebase was generated through conversations with AI - just describing what was needed and letting the AI do the work.
+
+**Why does this matter?**
+- If a non-coder can build this, imagine what you can do
+- AI-assisted development is the future
+- No Go knowledge required to customize or extend
+- Just describe what you want, and AI can help you modify it
+
+**The WSL Problem**
+The original CCR (Node.js version) kept crashing my WSL due to memory issues. Instead of learning Go and spending weeks coding, I just asked AI to rewrite it in Go. The result? 80% less memory usage and a working solution in hours, not weeks.
+
+**Try it yourself!**
+Want to add a feature? Just ask AI. The codebase is AI-friendly and well-structured for further AI-assisted development.
+
+---
+
 ## Installation
 
 ```bash
