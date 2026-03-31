@@ -1,0 +1,62 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+ccg
+ccg-server
+build/
+
+# Test binary
+*.test
+
+# Output of go coverage
+*.out
+
+# Dependency directories
+vendor/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Config files with real data (DO NOT COMMIT API KEYS)
+config.json
+*.local.json
+*.local
+config.local.*
+.ccg/
+~/.ccg/
+
+# Log files
+*.log
+logs/
+log/
+
+# PID files
+*.pid
+.pid
+
+# Credential files
+*.key
+*.pem
+*.p12
+*.pfx
+credentials.json
+secrets.json
+.token
+.apikey
+
+# Environment files
+.env
+.env.*
+
+# Go sum file (will be regenerated)
+go.sum
