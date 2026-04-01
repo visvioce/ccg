@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -18,6 +19,7 @@ import (
 	"github.com/musistudio/ccg/internal/config"
 	"github.com/musistudio/ccg/internal/preset"
 	"github.com/musistudio/ccg/internal/server"
+	"github.com/musistudio/ccg/internal/statusline"
 	"github.com/musistudio/ccg/pkg/shared"
 )
 
@@ -41,7 +43,7 @@ func main() {
 		startServer()
 	case "status":
 		showStatus()
-	case "model", "models":
+	case "model":
 		showModels()
 	case "ui":
 		startUI()
@@ -57,9 +59,15 @@ func main() {
 		runStatusline()
 	case "install":
 		handleInstall()
+	case "-h", "--help", "help":
+		printUsage()
 	case "-v", "--version", "version":
 		showVersion()
 	default:
+		// Check if it's a preset name
+		if handlePresetQuickCall(command) {
+			return
+		}
 		fmt.Printf("Unknown command: %s\n", command)
 		printUsage()
 		os.Exit(1)
@@ -69,39 +77,41 @@ func main() {
 func printUsage() {
 	fmt.Println(`CCG - Claude Code Router v` + VERSION + `
 
-Usage: ccg <command>
+Usage: ccg <command> [arguments]
 
 Commands:
-  start         Start the CCG server
-  stop          Stop the CCG server
-  restart       Restart the CCG server
-  status        Show server status
-  statusline    Integrated statusline for prompt
-  code          Execute claude command
-  model         Interactive model selection
-  ui            Open Web UI (not implemented)
-  preset        Manage presets
-  install       Install preset from marketplace
-  activate      Output environment variables
-  env           Show environment variables
-  -v, version   Show version
+  start              Start the CCG server
+  stop               Stop the CCG server
+  restart            Restart the CCG server
+  status             Show server status
+  statusline         Integrated statusline for prompt
+  code               Execute claude command
+  model              Interactive model selection
+  ui                 Open Web UI
+  preset             Manage presets
+  install            Install preset from marketplace
+  activate           Output environment variables
+  env                Show environment variables
+  -v, version        Show version
+  <preset> <prompt>  Execute prompt with preset configuration
 
 Examples:
   ccg start
   ccg status
   ccg model
-  ccg preset list`)
+  ccg preset list
+  ccg my-preset "Write a Hello World"  # Use preset configuration`)
 }
 
 func startServer() {
 	log.Println("Starting CCG server...")
-	
+
 	// Check if already running
 	if isRunning() {
 		log.Println("CCG server is already running")
 		return
 	}
-	
+
 	// Check if daemon mode
 	if len(os.Args) > 2 && os.Args[2] == "--daemon" {
 		// Run in background using setsid to create new session
@@ -122,7 +132,7 @@ func startServer() {
 		}
 		return
 	}
-	
+
 	// Run in foreground
 	// Save PID to file first
 	if err := os.WriteFile(shared.PIDFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644); err != nil {
@@ -135,26 +145,37 @@ func startServer() {
 }
 
 func startUI() {
+	cfg := config.New()
+	configPath := config.GetDefaultConfigPath()
+	if err := cfg.Load(configPath); err == nil {
+		// Config loaded successfully
+	}
+
+	port := cfg.Get("PORT")
+	if port == "" {
+		port = "3456"
+	}
+	host := cfg.Get("HOST")
+	if host == "" {
+		host = "127.0.0.1"
+	}
+
 	// Start server in background if not running
 	if !isRunning() {
 		log.Println("Starting CCG server...")
-		srv := server.New()
-		go func() {
-			if err := srv.Start(); err != nil {
-				log.Printf("Server error: %v", err)
-			}
-		}()
-		// Wait for server to start
+		startServerInBackground()
 		time.Sleep(2 * time.Second)
 	}
 
 	// Open browser
-	url := "http://127.0.0.1:3456"
+	url := fmt.Sprintf("http://%s:%s", host, port)
 	var cmd *exec.Cmd
-	if os.Getenv("WSL_DISTRO_NAME") != "" {
-		// Running in WSL, use wslview
+	switch {
+	case os.Getenv("WSL_DISTRO_NAME") != "":
 		cmd = exec.Command("wslview", url)
-	} else {
+	case os.Getenv("OS") == "Windows_NT":
+		cmd = exec.Command("cmd", "/c", "start", url)
+	default:
 		cmd = exec.Command("xdg-open", url)
 	}
 	if err := cmd.Start(); err != nil {
@@ -167,21 +188,31 @@ func startUI() {
 
 func stopServer() {
 	log.Println("Stopping CCG server...")
-	
+
+	// Check reference count
+	if data, err := os.ReadFile(refCountFile); err == nil {
+		count := 0
+		fmt.Sscanf(string(data), "%d", &count)
+		if count > 0 {
+			log.Printf("Cannot stop server: %d active code sessions running", count)
+			return
+		}
+	}
+
 	// Read PID from file
 	pidData, err := os.ReadFile(shared.PIDFile)
 	if err != nil {
 		log.Println("CCG server is not running (no PID file)")
 		return
 	}
-	
+
 	pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
 	if err != nil {
 		log.Println("Invalid PID file")
 		os.Remove(shared.PIDFile)
 		return
 	}
-	
+
 	// Kill the process
 	process, err := os.FindProcess(pid)
 	if err != nil {
@@ -189,13 +220,13 @@ func stopServer() {
 		os.Remove(shared.PIDFile)
 		return
 	}
-	
+
 	if err := process.Kill(); err != nil {
 		log.Printf("Failed to stop server: %v", err)
 	} else {
 		log.Println("CCG server stopped successfully")
 	}
-	
+
 	// Clean up PID file
 	os.Remove(shared.PIDFile)
 }
@@ -257,16 +288,20 @@ func showModels() {
 	}
 
 	providers := cfg.GetProviders()
-	fmt.Println("Available models:")
-	fmt.Println("")
 
-	for _, p := range providers {
-		fmt.Printf("[%s]\n", p.Name)
-		for _, m := range p.Models {
-			fmt.Printf("  %s,%s\n", p.Name, m)
+	// Non-interactive mode: just list models
+	if cfg.IsNonInteractiveMode() || (len(os.Args) > 2 && os.Args[2] == "--list") {
+		fmt.Println("Available models:")
+		for _, p := range providers {
+			fmt.Printf("[%s]\n", p.Name)
+			for _, m := range p.Models {
+				fmt.Printf("  %s,%s\n", p.Name, m)
+			}
 		}
-		fmt.Println("")
+		return
 	}
+
+	runFullModelSelector()
 }
 
 func activate() {
@@ -277,15 +312,36 @@ func activate() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	providers := cfg.GetProviders()
-
-	fmt.Printf("export CCG_HOST=%s\n", cfg.Get("HOST"))
-	fmt.Printf("export CCG_PORT=%s\n", cfg.Get("PORT"))
-
-	for _, p := range providers {
-		envName := toUpper(p.Name) + "_API_KEY"
-		fmt.Printf("export %s=%s\n", envName, p.APIKey)
+	port := cfg.Get("PORT")
+	if port == "" {
+		port = "3456"
 	}
+	host := cfg.Get("HOST")
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	apiKey := cfg.Get("APIKEY")
+	proxyURL := cfg.Get("PROXY_URL")
+	timeout := cfg.Get("API_TIMEOUT_MS")
+
+	baseURL := fmt.Sprintf("http://%s:%s", host, port)
+
+	fmt.Printf("export ANTHROPIC_BASE_URL=%s/v1/messages\n", baseURL)
+	fmt.Printf("export ANTHROPIC_AUTH_TOKEN=%s\n", apiKey)
+	fmt.Printf("export ANTHROPIC_API_KEY=%s\n", apiKey)
+	fmt.Printf("export CLAUDE_CODE_USE_CCR=true\n")
+
+	if proxyURL != "" {
+		fmt.Printf("export NO_PROXY=%s\n", proxyURL)
+		fmt.Printf("export HTTP_PROXY=%s\n", proxyURL)
+		fmt.Printf("export HTTPS_PROXY=%s\n", proxyURL)
+	}
+	if timeout != "" {
+		fmt.Printf("export API_TIMEOUT_MS=%s\n", timeout)
+	}
+
+	fmt.Printf("export DISABLE_TELEMETRY=1\n")
+	fmt.Printf("export DISABLE_COST_WARNINGS=1\n")
 
 	fmt.Println("")
 	fmt.Println("# Add to your shell profile to use CCG:")
@@ -313,56 +369,145 @@ func showEnv() {
 }
 
 func runCode() {
-	if len(os.Args) < 3 {
-		fmt.Println("Usage: ccg code <prompt>")
-		os.Exit(1)
-	}
-
-	prompt := strings.Join(os.Args[2:], " ")
-
 	cfg := config.New()
 	configPath := config.GetDefaultConfigPath()
 	if err := cfg.Load(configPath); err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	providers := cfg.GetProviders()
-	if len(providers) == 0 {
-		fmt.Println("Error: No providers configured")
-		os.Exit(1)
+	// Ensure server is running
+	if !isRunning() {
+		log.Println("Starting CCG server...")
+		startServerInBackground()
+		time.Sleep(2 * time.Second)
 	}
 
-	provider := providers[0]
-	host := provider.Host
+	// Build environment variables for Claude Code
+	port := cfg.Get("PORT")
+	if port == "" {
+		port = "3456"
+	}
+	host := cfg.Get("HOST")
 	if host == "" {
-		host = getDefaultHost(provider.Name)
+		host = "127.0.0.1"
+	}
+	apiKey := cfg.Get("APIKEY")
+
+	baseURL := fmt.Sprintf("http://%s:%s", host, port)
+
+	// Set environment variables for Claude Code
+	env := os.Environ()
+	env = append(env, fmt.Sprintf("ANTHROPIC_BASE_URL=%s/v1/messages", baseURL))
+	env = append(env, fmt.Sprintf("ANTHROPIC_AUTH_TOKEN=%s", apiKey))
+	env = append(env, fmt.Sprintf("ANTHROPIC_API_KEY=%s", apiKey))
+	env = append(env, "CLAUDE_CODE_USE_CCR=true")
+
+	// Non-interactive mode support
+	if cfg.IsNonInteractiveMode() {
+		env = append(env, "CI=true")
+		env = append(env, "FORCE_COLOR=0")
+		env = append(env, "NODE_NO_READLINE=1")
+		env = append(env, "TERM=dumb")
 	}
 
-	reqBody := map[string]any{
-		"model": provider.Models[0],
-		"messages": []map[string]any{
-			{"role": "user", "content": prompt},
+	// Create settings file for Claude Code
+	settingsPath := filepath.Join(os.TempDir(), fmt.Sprintf("ccg-settings-%d.json", os.Getpid()))
+	settings := map[string]any{
+		"apiKeyHelper":           nil,
+		"customApiKeyResponses":  []any{},
+		"hasCompletedOnboarding": true,
+		"mcpServers":             map[string]any{},
+		"projects":               map[string]any{},
+		"permissions": map[string]any{
+			"allow": []any{
+				"Bash(find:*)",
+				"Bash(ls:*)",
+				"Bash(tree:*)",
+				"Bash(cat:*)",
+				"Bash(head:*)",
+				"Bash(tail:*)",
+				"Bash(wc:*)",
+				"Bash(grep:*)",
+				"Bash(awk:*)",
+				"Bash(sort:*)",
+				"Bash(uniq:*)",
+				"Bash(diff:*)",
+				"Bash(realpath:*)",
+				"Bash(file:*)",
+				"Bash(stat:*)",
+				"Bash(md5sum:*)",
+				"Bash(sha256sum:*)",
+				"Bash(echo:*)",
+				"Bash(pwd:*)",
+				"Bash(which:*)",
+				"Bash(date:*)",
+			},
+			"deny": []any{},
 		},
-		"stream": false,
+	}
+	settingsData, _ := json.MarshalIndent(settings, "", "  ")
+	os.WriteFile(settingsPath, settingsData, 0644)
+	defer os.Remove(settingsPath)
+
+	env = append(env, fmt.Sprintf("CLAUDE_CODE_SETTINGS=%s", settingsPath))
+
+	// Find claude executable
+	claudePath := cfg.Get("CLAUDE_PATH")
+	if claudePath == "" {
+		var err error
+		claudePath, err = exec.LookPath("claude")
+		if err != nil {
+			fmt.Println("Error: 'claude' command not found. Please install Claude Code CLI.")
+			fmt.Println("  npm install -g @anthropic-ai/claude-code")
+			os.Exit(1)
+		}
 	}
 
-	bodyBytes, _ := json.Marshal(reqBody)
-
-	req, _ := http.NewRequest("POST", host+"/v1/messages", bytes.NewReader(bodyBytes))
-	req.Header.Set("Content-Type", "application/json")
-	if provider.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+provider.APIKey)
+	// Build command arguments
+	args := []string{}
+	if len(os.Args) > 2 {
+		args = os.Args[2:]
 	}
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		fmt.Printf("Error: %v\n", err)
-		os.Exit(1)
-	}
-	defer resp.Body.Close()
+	// Launch Claude Code
+	cmd := exec.Command(claudePath, args...)
+	cmd.Env = env
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 
-	result, _ := io.ReadAll(resp.Body)
-	fmt.Println(string(result))
+	// Increment reference count
+	incrementRefCount()
+	defer decrementRefCount()
+
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitErr.ExitCode())
+		}
+		log.Fatalf("Failed to run claude: %v", err)
+	}
+}
+
+const refCountFile = "/tmp/ccg-reference-count.txt"
+
+func incrementRefCount() {
+	data, _ := os.ReadFile(refCountFile)
+	count := 0
+	fmt.Sscanf(string(data), "%d", &count)
+	count++
+	os.WriteFile(refCountFile, []byte(fmt.Sprintf("%d", count)), 0644)
+}
+
+func decrementRefCount() {
+	data, _ := os.ReadFile(refCountFile)
+	count := 0
+	fmt.Sscanf(string(data), "%d", &count)
+	count--
+	if count <= 0 {
+		os.Remove(refCountFile)
+	} else {
+		os.WriteFile(refCountFile, []byte(fmt.Sprintf("%d", count)), 0644)
+	}
 }
 
 func getDefaultHost(providerName string) string {
@@ -390,13 +535,10 @@ func runStatusline() {
 		if line == "" {
 			continue
 		}
-
-		var input map[string]any
-		if err := json.Unmarshal([]byte(line), &input); err != nil {
-			continue
+		output := statusline.RenderStatusLine(line)
+		if output != "" {
+			fmt.Println(output)
 		}
-
-		showStatus()
 	}
 }
 
@@ -428,18 +570,18 @@ func isRunning() bool {
 	if err != nil {
 		return false
 	}
-	
+
 	pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
 	if err != nil {
 		return false
 	}
-	
+
 	// Check if process exists (signal 0 doesn't kill, just checks)
 	process, err := os.FindProcess(pid)
 	if err != nil {
 		return false
 	}
-	
+
 	// On Unix, signal 0 checks if process exists
 	err = process.Signal(syscall.Signal(0))
 	return err == nil
@@ -520,17 +662,44 @@ func handlePreset() {
 
 	case "export":
 		if len(os.Args) < 4 {
-			fmt.Println("Usage: ccg preset export <name> [output]")
+			fmt.Println("Usage: ccg preset export <name> [output] [--description <desc>] [--author <author>] [--tags <tag1,tag2>] [--include-sensitive]")
 			return
 		}
 		name := os.Args[3]
-		output := ""
-		if len(os.Args) > 4 {
-			output = os.Args[4]
-		} else {
-			output = name + ".json"
+		output := name + ".json"
+		description := ""
+		author := ""
+		tags := ""
+		includeSensitive := false
+
+		// Parse optional arguments
+		for i := 4; i < len(os.Args); i++ {
+			switch os.Args[i] {
+			case "--description":
+				if i+1 < len(os.Args) {
+					description = os.Args[i+1]
+					i++
+				}
+			case "--author":
+				if i+1 < len(os.Args) {
+					author = os.Args[i+1]
+					i++
+				}
+			case "--tags":
+				if i+1 < len(os.Args) {
+					tags = os.Args[i+1]
+					i++
+				}
+			case "--include-sensitive":
+				includeSensitive = true
+			default:
+				if !strings.HasPrefix(os.Args[i], "--") {
+					output = os.Args[i]
+				}
+			}
 		}
-		if err := pm.ExportPreset(name, output); err != nil {
+
+		if err := pm.ExportPresetWithOptions(name, output, description, author, tags, includeSensitive); err != nil {
 			fmt.Printf("Error exporting preset: %v\n", err)
 			return
 		}
@@ -562,4 +731,128 @@ func printPresetUsage() {
    install <source>   Install preset from file, URL, or name
    export <name>      Export preset to file
    delete <name>     Delete a preset`)
+}
+
+// handlePresetQuickCall handles quick preset invocation: ccg <preset-name> "prompt"
+func handlePresetQuickCall(presetName string) bool {
+	pm := preset.NewPresetManager()
+
+	// Check if preset exists
+	p, err := pm.GetPreset(presetName)
+	if err != nil {
+		return false
+	}
+
+	// Get the prompt from remaining arguments
+	if len(os.Args) < 3 {
+		fmt.Printf("Usage: ccg %s <prompt>\n", presetName)
+		fmt.Printf("Preset '%s' found. Use it with a prompt.\n", p.Name)
+		return true
+	}
+
+	prompt := strings.Join(os.Args[2:], " ")
+
+	// Ensure server is running
+	if !isRunning() {
+		log.Println("Starting CCG server...")
+		startServerInBackground()
+		time.Sleep(2 * time.Second)
+	}
+
+	// Load preset configuration and execute
+	cfg := config.New()
+	configPath := config.GetDefaultConfigPath()
+
+	// Apply preset configuration
+	secrets := make(map[string]string)
+	// Could load secrets from environment or prompt
+	for _, schema := range p.Schema {
+		if envVal := os.Getenv(schema.ID); envVal != "" {
+			secrets[schema.ID] = envVal
+		}
+	}
+
+	// Apply preset to config
+	if err := pm.ApplyPreset(presetName, secrets); err != nil {
+		fmt.Printf("Error applying preset: %v\n", err)
+		return true
+	}
+
+	// Execute code command with preset
+	cfg.Load(configPath)
+	providers := cfg.GetProviders()
+	if len(providers) == 0 {
+		fmt.Println("Error: No providers configured in preset")
+		return true
+	}
+
+	provider := providers[0]
+	host := provider.Host
+	if host == "" {
+		host = getDefaultHost(provider.Name)
+	}
+
+	// Extract model from router or first model
+	router := cfg.GetRouter()
+	model := ""
+	if router != nil && router.Default != "" {
+		model = router.Default
+	} else if len(provider.Models) > 0 {
+		model = provider.Models[0]
+	}
+
+	// Execute the prompt
+	reqBody := map[string]any{
+		"model": model,
+		"messages": []map[string]any{
+			{"role": "user", "content": prompt},
+		},
+		"stream": false,
+	}
+
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	req, _ := http.NewRequest("POST", host, bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	if provider.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+provider.APIKey)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return true
+	}
+	defer resp.Body.Close()
+
+	result, _ := io.ReadAll(resp.Body)
+
+	// Parse and display response
+	var respData map[string]any
+	if err := json.Unmarshal(result, &respData); err == nil {
+		if content, ok := respData["content"].([]any); ok && len(content) > 0 {
+			if text, ok := content[0].(map[string]any)["text"].(string); ok {
+				fmt.Println(text)
+				return true
+			}
+		}
+		if choices, ok := respData["choices"].([]any); ok && len(choices) > 0 {
+			if message, ok := choices[0].(map[string]any)["message"].(map[string]any); ok {
+				if content, ok := message["content"].(string); ok {
+					fmt.Println(content)
+					return true
+				}
+			}
+		}
+	}
+
+	fmt.Println(string(result))
+	return true
+}
+
+func startServerInBackground() {
+	cmd := exec.Command(os.Args[0], "start", "--daemon")
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.Start()
 }
