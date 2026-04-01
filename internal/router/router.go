@@ -208,6 +208,10 @@ func (r *Router) hasWebSearch(body *tokenizer.RequestBody) bool {
 	return false
 }
 
+func (r *Router) hasThinking(body *tokenizer.RequestBody) bool {
+	return body.Thinking != nil
+}
+
 func (r *Router) hasImage(body *tokenizer.RequestBody) bool {
 	for _, msg := range body.Messages {
 		if content, ok := msg.Content.([]any); ok {
@@ -221,10 +225,6 @@ func (r *Router) hasImage(body *tokenizer.RequestBody) bool {
 		}
 	}
 	return false
-}
-
-func (r *Router) hasThinking(body *tokenizer.RequestBody) bool {
-	return body.Thinking != nil
 }
 
 func SearchProjectBySession(sessionId string) string {
@@ -378,6 +378,7 @@ func (r *Router) loadProjectRouter(sessionId string) *config.RouterConfig {
 					LongContext:          getString(router, "longContext"),
 					LongContextThreshold: getInt(router, "longContextThreshold"),
 					WebSearch:            getString(router, "webSearch"),
+					Image:                getString(router, "image"),
 				}
 			}
 		}
@@ -395,6 +396,7 @@ func (r *Router) loadProjectRouter(sessionId string) *config.RouterConfig {
 					LongContext:          getString(router, "longContext"),
 					LongContextThreshold: getInt(router, "longContextThreshold"),
 					WebSearch:            getString(router, "webSearch"),
+					Image:                getString(router, "image"),
 				}
 			}
 		}
