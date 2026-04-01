@@ -40,20 +40,23 @@ type Provider struct {
 }
 
 type RouterConfig struct {
-	Default              string            `json:"default"`
-	Background           string            `json:"background"`
-	Think                string            `json:"think"`
-	LongContext          string            `json:"longContext"`
-	LongContextThreshold int               `json:"longContextThreshold"`
-	WebSearch            string            `json:"webSearch"`
-	Image                string            `json:"image"`
-	Scenarios            map[string]string `json:"scenarios"`
+	Default              string              `json:"default"`
+	Background           string              `json:"background"`
+	Think                string              `json:"think"`
+	LongContext          string              `json:"longContext"`
+	LongContextThreshold int                 `json:"longContextThreshold"`
+	WebSearch            string              `json:"webSearch"`
+	Image                string              `json:"image"`
+	Scenarios            map[string]string   `json:"scenarios"`
+	Fallback             map[string][]string `json:"Fallback"`
 }
 
 type AppConfig struct {
-	Providers    []Provider    `json:"providers"`
-	ProvidersAlt []Provider    `json:"Providers"` // CCR兼容
-	Router       *RouterConfig `json:"Router"`
+	Providers    []Provider          `json:"providers"`
+	ProvidersAlt []Provider          `json:"Providers"` // CCR兼容
+	Fallback     map[string][]string `json:"fallback"`
+	FallbackAlt  map[string][]string `json:"Fallback"` // CCR兼容
+	Router       *RouterConfig       `json:"Router"`
 }
 
 func New() *Config {
@@ -93,6 +96,16 @@ func (c *Config) Load(path string) error {
 	// 兼容CCR格式: 如果providers为空，使用Providers
 	if len(cfg.Providers) == 0 && len(cfg.ProvidersAlt) > 0 {
 		cfg.Providers = cfg.ProvidersAlt
+	}
+
+	// 兼容CCR格式: 如果fallback为空，使用Fallback
+	if cfg.Fallback == nil && cfg.FallbackAlt != nil {
+		cfg.Fallback = cfg.FallbackAlt
+	}
+
+	// 将 fallback 配置同步到 Router 中，保持一致
+	if cfg.Router != nil && cfg.Fallback != nil {
+		cfg.Router.Fallback = cfg.Fallback
 	}
 
 	for i := range cfg.Providers {
@@ -161,6 +174,15 @@ func (c *Config) GetRouter() *RouterConfig {
 	return c.router
 }
 
+func (c *Config) GetFallback() map[string][]string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.router != nil {
+		return c.router.Fallback
+	}
+	return nil
+}
+
 func (c *Config) GetProvider(name string) *Provider {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -211,7 +233,7 @@ func GetConfigDir() string {
 	if home == "" {
 		home = os.Getenv("USERPROFILE")
 	}
-	return filepath.Join(home, ".ccg")
+	return filepath.Join(home, ".claude-code-router")
 }
 
 func GetDefaultConfigPath() string {

@@ -20,9 +20,9 @@ const (
 type ScenarioType string
 
 const (
-	ScenarioDefault      ScenarioType = "default"
-	ScenarioBackground   ScenarioType = "background"
-	ScenarioThink        ScenarioType = "think"
+	ScenarioDefault     ScenarioType = "default"
+	ScenarioBackground  ScenarioType = "background"
+	ScenarioThink       ScenarioType = "think"
 	ScenarioLongContext ScenarioType = "longContext"
 	ScenarioWebSearch   ScenarioType = "webSearch"
 	ScenarioImage       ScenarioType = "image"
@@ -179,11 +179,11 @@ func (r *Router) hasSubagentModel(body *tokenizer.RequestBody) bool {
 		return false
 	}
 
-	return strings.Contains(sysStr, "<CCG-SUBAGENT-MODEL>")
+	return strings.Contains(sysStr, "<CCR-SUBAGENT-MODEL>") || strings.Contains(sysStr, "<CCG-SUBAGENT-MODEL>")
 }
 
 func (r *Router) extractSubagentModel(body *tokenizer.RequestBody) string {
-	re := regexp.MustCompile(`<CCG-SUBAGENT-MODEL>(.*?)</CCG-SUBAGENT-MODEL>`)
+	re := regexp.MustCompile(`<(?:CCR|CCG)-SUBAGENT-MODEL>(.*?)</(?:CCR|CCG)-SUBAGENT-MODEL>`)
 
 	var sysStr string
 	switch v := body.System.(type) {
@@ -273,21 +273,25 @@ func (r *Router) loadCustomRouter(path string, reqBody *tokenizer.RequestBody, s
 	// 创建 JavaScript 虚拟机
 	vm := otto.New()
 
-	// 设置上下文对象
-	ctx := map[string]interface{}{
-		"model":     reqBody.Model,
-		"tokenCount": tokenizer.CountRequestTokens(reqBody),
-		"sessionId": sessionId,
+	// 构建请求对象
+	req := map[string]interface{}{
+		"body": reqBody,
 	}
 
-	// 将上下文转换为 JSON 以便传递给 JavaScript
-	ctxJSON, _ := json.Marshal(ctx)
+	// 构建配置对象
+	config := map[string]interface{}{
+		"Router": r.cfg,
+	}
+
+	// 将对象转换为 JSON
+	reqJSON, _ := json.Marshal(req)
+	configJSON, _ := json.Marshal(config)
 
 	// 构建完整的 JavaScript 代码
 	script := `
-		var context = ` + string(ctxJSON) + `;
-		var reqBody = context;
-		var sessionId = context.sessionId;
+		// 提供请求和配置对象
+		var req = ` + string(reqJSON) + `;
+		var config = ` + string(configJSON) + `;
 
 		// 提供一个简单的日志函数
 		function log(msg) {
@@ -297,13 +301,33 @@ func (r *Router) loadCustomRouter(path string, reqBody *tokenizer.RequestBody, s
 		// 执行用户代码
 		` + code + `
 
-		// 返回结果
-		if (typeof route === 'function') {
-			route(context);
+		// 检查是否有导出的函数
+		var result = null;
+		if (typeof module !== 'undefined' && module.exports) {
+			// CommonJS 模块格式
+			var routerFn = module.exports;
+			if (typeof routerFn === 'function') {
+				// 支持异步函数
+				var fnResult = routerFn(req, config);
+				if (fnResult && typeof fnResult.then === 'function') {
+					// 处理 Promise
+					fnResult.then(function(res) {
+						result = res;
+					});
+				} else {
+					result = fnResult;
+				}
+			}
+		} else if (typeof router === 'function') {
+			// 直接定义的 router 函数
+			result = router(req, config);
+		} else if (typeof route === 'function') {
+			// 兼容旧格式的 route 函数
+			result = route(req, config);
 		}
 
-		// 返回选中的模型
-		context.model || "";
+		// 处理返回值
+		result;
 	`
 
 	// 执行 JavaScript
@@ -313,20 +337,15 @@ func (r *Router) loadCustomRouter(path string, reqBody *tokenizer.RequestBody, s
 		return ""
 	}
 
-	// 获取返回值
+	// 检查返回值
+	if result.IsNull() || result.IsUndefined() {
+		// 返回 null 或 undefined，使用默认路由
+		return ""
+	}
+
 	if result.IsString() {
 		model, _ := result.ToString()
 		return model
-	}
-
-	// 检查 context 对象是否被修改
-	if val, err := vm.Get("context"); err == nil {
-		if obj := val.Object(); obj != nil {
-			if modelVal, err := obj.Get("model"); err == nil && modelVal.IsString() {
-				model, _ := modelVal.ToString()
-				return model
-			}
-		}
 	}
 
 	return ""
@@ -353,12 +372,12 @@ func (r *Router) loadProjectRouter(sessionId string) *config.RouterConfig {
 		if json.Unmarshal(data, &cfg) == nil {
 			if router, ok := cfg["Router"].(map[string]any); ok {
 				return &config.RouterConfig{
-					Default: getString(router, "default"),
-					Background: getString(router, "background"),
-					Think: getString(router, "think"),
-					LongContext: getString(router, "longContext"),
+					Default:              getString(router, "default"),
+					Background:           getString(router, "background"),
+					Think:                getString(router, "think"),
+					LongContext:          getString(router, "longContext"),
 					LongContextThreshold: getInt(router, "longContextThreshold"),
-					WebSearch: getString(router, "webSearch"),
+					WebSearch:            getString(router, "webSearch"),
 				}
 			}
 		}
@@ -370,12 +389,12 @@ func (r *Router) loadProjectRouter(sessionId string) *config.RouterConfig {
 		if json.Unmarshal(data, &cfg) == nil {
 			if router, ok := cfg["Router"].(map[string]any); ok {
 				return &config.RouterConfig{
-					Default: getString(router, "default"),
-					Background: getString(router, "background"),
-					Think: getString(router, "think"),
-					LongContext: getString(router, "longContext"),
+					Default:              getString(router, "default"),
+					Background:           getString(router, "background"),
+					Think:                getString(router, "think"),
+					LongContext:          getString(router, "longContext"),
 					LongContextThreshold: getInt(router, "longContextThreshold"),
-					WebSearch: getString(router, "webSearch"),
+					WebSearch:            getString(router, "webSearch"),
 				}
 			}
 		}
@@ -396,4 +415,17 @@ func getInt(m map[string]any, key string) int {
 		return int(v)
 	}
 	return 0
+}
+
+func (r *Router) GetFallbacks(scenario ScenarioType) []string {
+	router := r.cfg.GetRouter()
+	if router == nil || router.Fallback == nil {
+		return nil
+	}
+
+	fallback, ok := router.Fallback[string(scenario)]
+	if ok {
+		return fallback
+	}
+	return nil
 }

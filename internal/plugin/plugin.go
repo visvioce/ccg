@@ -16,7 +16,7 @@ type PluginMetadata struct {
 	Name     string         `json:"name"`
 	Enabled  bool           `json:"enabled"`
 	Options  map[string]any `json:"options,omitempty"`
-	LoadedAt time.Time     `json:"loaded_at"`
+	LoadedAt time.Time      `json:"loaded_at"`
 }
 
 type CCGPlugin struct {
@@ -150,19 +150,19 @@ func CalculateTokenSpeed(inputTokens, outputTokens int, duration time.Duration) 
 }
 
 type TokenSpeedStats struct {
-	Provider      string    `json:"provider"`
-	Model         string    `json:"model"`
-	InputTokens   int       `json:"input_tokens"`
-	OutputTokens  int       `json:"output_tokens"`
-	DurationMs    int64     `json:"duration_ms"`
-	TokenSpeed    float64   `json:"token_speed"`
-	Timestamp     time.Time `json:"timestamp"`
+	Provider     string    `json:"provider"`
+	Model        string    `json:"model"`
+	InputTokens  int       `json:"input_tokens"`
+	OutputTokens int       `json:"output_tokens"`
+	DurationMs   int64     `json:"duration_ms"`
+	TokenSpeed   float64   `json:"token_speed"`
+	Timestamp    time.Time `json:"timestamp"`
 }
 
 var (
-	tokenSpeedStats    = make([]TokenSpeedStats, 0)
-	tokenSpeedStatsMu  sync.RWMutex
-	maxStatsRecords    = 1000
+	tokenSpeedStats   = make([]TokenSpeedStats, 0)
+	tokenSpeedStatsMu sync.RWMutex
+	maxStatsRecords   = 1000
 )
 
 func RecordTokenSpeed(provider, model string, inputTokens, outputTokens int, duration time.Duration) {
@@ -207,7 +207,7 @@ func GetGlobalTokenSpeedStats() map[string]any {
 
 	if len(tokenSpeedStats) == 0 {
 		return map[string]any{
-			"total_requests": 0,
+			"total_requests":  0,
 			"avg_token_speed": 0,
 		}
 	}
@@ -224,10 +224,10 @@ func GetGlobalTokenSpeedStats() map[string]any {
 	avgSpeed := totalSpeed / float64(len(tokenSpeedStats))
 
 	return map[string]any{
-		"total_requests":     len(tokenSpeedStats),
+		"total_requests":      len(tokenSpeedStats),
 		"total_input_tokens":  totalInput,
 		"total_output_tokens": totalOutput,
-		"avg_token_speed":    avgSpeed,
+		"avg_token_speed":     avgSpeed,
 	}
 }
 

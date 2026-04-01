@@ -113,7 +113,7 @@ make install
 
 ## 配置
 
-配置文件: `~/.ccg/config.json`
+配置文件: `~/.claude-code-router/config.json`
 
 ```json
 {

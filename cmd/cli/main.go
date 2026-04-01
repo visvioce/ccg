@@ -101,13 +101,13 @@ Examples:
 
 func startServer() {
 	log.Println("Starting CCG server...")
-	
+
 	// Check if already running
 	if isRunning() {
 		log.Println("CCG server is already running")
 		return
 	}
-	
+
 	// Check if daemon mode
 	if len(os.Args) > 2 && os.Args[2] == "--daemon" {
 		// Run in background using setsid to create new session
@@ -128,7 +128,7 @@ func startServer() {
 		}
 		return
 	}
-	
+
 	// Run in foreground
 	// Save PID to file first
 	if err := os.WriteFile(shared.PIDFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644); err != nil {
@@ -173,21 +173,21 @@ func startUI() {
 
 func stopServer() {
 	log.Println("Stopping CCG server...")
-	
+
 	// Read PID from file
 	pidData, err := os.ReadFile(shared.PIDFile)
 	if err != nil {
 		log.Println("CCG server is not running (no PID file)")
 		return
 	}
-	
+
 	pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
 	if err != nil {
 		log.Println("Invalid PID file")
 		os.Remove(shared.PIDFile)
 		return
 	}
-	
+
 	// Kill the process
 	process, err := os.FindProcess(pid)
 	if err != nil {
@@ -195,13 +195,13 @@ func stopServer() {
 		os.Remove(shared.PIDFile)
 		return
 	}
-	
+
 	if err := process.Kill(); err != nil {
 		log.Printf("Failed to stop server: %v", err)
 	} else {
 		log.Println("CCG server stopped successfully")
 	}
-	
+
 	// Clean up PID file
 	os.Remove(shared.PIDFile)
 }
@@ -434,18 +434,18 @@ func isRunning() bool {
 	if err != nil {
 		return false
 	}
-	
+
 	pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
 	if err != nil {
 		return false
 	}
-	
+
 	// Check if process exists (signal 0 doesn't kill, just checks)
 	process, err := os.FindProcess(pid)
 	if err != nil {
 		return false
 	}
-	
+
 	// On Unix, signal 0 checks if process exists
 	err = process.Signal(syscall.Signal(0))
 	return err == nil

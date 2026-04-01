@@ -170,8 +170,8 @@ func (m *PresetManager) ApplyPreset(name string, secrets map[string]string) erro
 	}
 
 	cfgData := map[string]any{
-		"providers": preset.Providers,
-		"router":    preset.Router,
+		"Providers": preset.Providers,
+		"Router":    preset.Router,
 	}
 
 	data, _ := json.MarshalIndent(cfgData, "", "  ")

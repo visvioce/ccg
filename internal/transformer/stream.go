@@ -21,9 +21,9 @@ type StreamChunk struct {
 }
 
 type StreamChoice struct {
-	Index        int                    `json:"index"`
-	Delta        StreamDelta            `json:"delta"`
-	FinishReason *string                `json:"finish_reason"`
+	Index        int         `json:"index"`
+	Delta        StreamDelta `json:"delta"`
+	FinishReason *string     `json:"finish_reason"`
 }
 
 type StreamDelta struct {
@@ -48,10 +48,10 @@ type AnthropicStreamChunk struct {
 }
 
 type StreamContent struct {
-	Type  string `json:"type"`
-	Text  string `json:"text,omitempty"`
-	ID    string `json:"id,omitempty"`
-	Name  string `json:"name,omitempty"`
+	Type  string                 `json:"type"`
+	Text  string                 `json:"text,omitempty"`
+	ID    string                 `json:"id,omitempty"`
+	Name  string                 `json:"name,omitempty"`
 	Input map[string]interface{} `json:"input,omitempty"`
 }
 
@@ -158,7 +158,7 @@ func (st *StreamTransformer) convertChunk(openaiChunk *StreamChunk, messageIndex
 		if choice.Delta.Content != "" {
 			*currentText += choice.Delta.Content
 			chunks = append(chunks, AnthropicStreamChunk{
-				Type: "content_block_delta",
+				Type:  "content_block_delta",
 				Index: 0,
 				Delta: map[string]interface{}{
 					"type": "text_delta",
@@ -170,16 +170,32 @@ func (st *StreamTransformer) convertChunk(openaiChunk *StreamChunk, messageIndex
 		// 处理工具调用
 		if len(choice.Delta.ToolCalls) > 0 {
 			for _, toolCall := range choice.Delta.ToolCalls {
-				chunks = append(chunks, AnthropicStreamChunk{
-					Type: "content_block_delta",
-					Index: 1,
-					Delta: map[string]interface{}{
-						"type":      "tool_use_delta",
-						"id":        toolCall["id"],
-						"name":      toolCall["function"],
-						"arguments": toolCall["arguments"],
-					},
-				})
+				if toolCallType, ok := toolCall["type"].(string); ok && toolCallType == "function" {
+					if fn, ok := toolCall["function"].(map[string]interface{}); ok {
+						name, _ := fn["name"].(string)
+						arguments, _ := fn["arguments"].(string)
+
+						// 解析 arguments
+						var input map[string]interface{}
+						if arguments != "" {
+							json.Unmarshal([]byte(arguments), &input)
+						}
+						if input == nil {
+							input = make(map[string]interface{})
+						}
+
+						chunks = append(chunks, AnthropicStreamChunk{
+							Type:  "content_block_delta",
+							Index: 1,
+							Delta: map[string]interface{}{
+								"type":  "tool_use_delta",
+								"id":    toolCall["id"],
+								"name":  name,
+								"input": input,
+							},
+						})
+					}
+				}
 			}
 		}
 
@@ -189,8 +205,8 @@ func (st *StreamTransformer) convertChunk(openaiChunk *StreamChunk, messageIndex
 			chunks = append(chunks, AnthropicStreamChunk{
 				Type: "message_delta",
 				Delta: map[string]interface{}{
-					"stop_reason":      stopReason,
-					"stop_sequence":    nil,
+					"stop_reason":   stopReason,
+					"stop_sequence": nil,
 				},
 			})
 		}

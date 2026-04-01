@@ -25,27 +25,27 @@ func (c *Config) SetRouter(router *RouterConfig) {
 func (c *Config) ToJSON() ([]byte, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	// Create a copy of the data for serialization
 	data := make(map[string]any)
-	
+
 	// Copy providers
 	if c.providers != nil {
 		data["providers"] = c.providers
 	}
-	
+
 	// Copy router
 	if c.router != nil {
 		data["router"] = c.router
 	}
-	
+
 	// Copy other config values
 	for k, v := range c.data {
 		if k != "providers" && k != "router" {
 			data[k] = v
 		}
 	}
-	
+
 	return json.MarshalIndent(data, "", "  ")
 }
 

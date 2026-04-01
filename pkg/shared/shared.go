@@ -7,9 +7,9 @@ import (
 
 var (
 	HomeDir     = getHomeDir()
-	ConfigDir   = filepath.Join(HomeDir, ".ccg")
+	ConfigDir   = filepath.Join(HomeDir, ".claude-code-router")
 	ProjectsDir = filepath.Join(HomeDir, ".claude", "projects")
-	PIDFile     = filepath.Join(HomeDir, ".ccg.pid")
+	PIDFile     = filepath.Join(HomeDir, ".claude-code-router", ".claude-code-router.pid")
 )
 
 func getHomeDir() string {

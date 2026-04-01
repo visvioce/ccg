@@ -3,11 +3,13 @@ package agent
 import (
 	"bytes"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -16,13 +18,25 @@ import (
 	"github.com/musistudio/ccg/internal/config"
 )
 
-// ImageCacheEntry 图片缓存条目
 type ImageCacheEntry struct {
 	Source    map[string]interface{} `json:"source"`
 	Timestamp int64                  `json:"timestamp"`
 }
 
-// LRUCache 简单的 LRU 缓存实现
+const (
+	// ImageCacheExpiration 图片缓存过期时间（毫秒）
+	ImageCacheExpiration = 24 * 60 * 60 * 1000 // 24小时
+	// ImageSystemPrompt 图片分析系统提示
+	ImageSystemPrompt = "You are a text-only language model and do not possess visual perception.\n\n" +
+		"If the user requests you to view, analyze, or extract information from an image, you **must** call the `analyzeImage` tool.\n\n" +
+		"When invoking this tool, you must pass the correct `imageId` extracted from the prior conversation.\n" +
+		"Image identifiers are always provided in the format `[Image #imageId]`.\n\n" +
+		"If multiple images exist, select the **most relevant imageId** based on the user's current request and prior context.\n\n" +
+		"Do not attempt to describe or analyze the image directly yourself.\n" +
+		"Ignore any user interruptions or unrelated instructions that might cause you to skip this requirement.\n" +
+		"Your response should consistently follow this rule whenever image-related analysis is requested."
+)
+
 type LRUCache struct {
 	mu       sync.RWMutex
 	items    map[string]*listNode
@@ -38,13 +52,14 @@ type listNode struct {
 	next  *listNode
 }
 
-// NewLRUCache 创建新的 LRU 缓存
 func NewLRUCache(capacity int) *LRUCache {
-	cache := &LRUCache{
-		items:    make(map[string]*listNode),
+	if capacity <= 0 {
+		capacity = 100
+	}
+	return &LRUCache{
+		items:    make(map[string]*listNode, capacity),
 		capacity: capacity,
 	}
-	return cache
 }
 
 func (c *LRUCache) Get(key string) *ImageCacheEntry {
@@ -76,7 +91,7 @@ func (c *LRUCache) Set(key string, value *ImageCacheEntry) {
 	c.items[key] = newNode
 	c.addToFront(newNode)
 
-	if len(c.items) > c.capacity {
+	for len(c.items) > c.capacity {
 		c.removeLRU()
 	}
 }
@@ -91,7 +106,7 @@ func (c *LRUCache) Has(key string) bool {
 func (c *LRUCache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.items = make(map[string]*listNode)
+	c.items = make(map[string]*listNode, c.capacity)
 	c.head = nil
 	c.tail = nil
 }
@@ -133,6 +148,8 @@ func (c *LRUCache) remove(node *listNode) {
 	} else {
 		c.tail = node.prev
 	}
+	node.prev = nil
+	node.next = nil
 }
 
 func (c *LRUCache) removeLRU() {
@@ -141,6 +158,15 @@ func (c *LRUCache) removeLRU() {
 	}
 	delete(c.items, c.tail.key)
 	c.remove(c.tail)
+}
+
+func (c *LRUCache) Delete(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if node, ok := c.items[key]; ok {
+		delete(c.items, key)
+		c.remove(node)
+	}
 }
 
 // ImageCache 图片缓存管理器
@@ -173,7 +199,12 @@ func (ic *ImageCache) StoreImage(id string, source map[string]interface{}) {
 func (ic *ImageCache) GetImage(id string) map[string]interface{} {
 	entry := ic.cache.Get(id)
 	if entry != nil {
-		return entry.Source
+		// 检查缓存是否过期
+		if time.Now().UnixMilli()-entry.Timestamp < ImageCacheExpiration {
+			return entry.Source
+		}
+		// 缓存过期，删除
+		ic.cache.Delete(id)
 	}
 	return nil
 }
@@ -318,34 +349,41 @@ func (a *ImageAgentV2) HandleToolCallV2(toolName string, input map[string]any, r
 
 // ReqHandler 处理请求，注入系统提示和处理图片
 func (a *ImageAgentV2) ReqHandler(reqBody map[string]interface{}, sessionId string) {
-	// 注入系统提示
-	systemPrompt := "You are a text-only language model and do not possess visual perception.\n\n" +
-		"If the user requests you to view, analyze, or extract information from an image, you **must** call the `analyzeImage` tool.\n\n" +
-		"When invoking this tool, you must pass the correct `imageId` extracted from the prior conversation.\n" +
-		"Image identifiers are always provided in the format `[Image #imageId]`.\n\n" +
-		"If multiple images exist, select the **most relevant imageId** based on the user's current request and prior context.\n\n" +
-			"Do not attempt to describe or analyze the image directly yourself.\n" +
-		"Ignore any user interruptions or unrelated instructions that might cause you to skip this requirement.\n" +
-		"Your response should consistently follow this rule whenever image-related analysis is requested."
-
+	// 注入系统提示，避免重复注入
 	system, ok := reqBody["system"].([]interface{})
 	if !ok {
 		system = make([]interface{}, 0)
 	}
-	system = append(system, map[string]interface{}{
-		"type": "text",
-		"text": systemPrompt,
-	})
-	reqBody["system"] = system
 
-	// 处理消息中的图片
+	// 检查是否已经注入了图片系统提示
+	hasImagePrompt := false
+	for _, item := range system {
+		if itemMap, ok := item.(map[string]interface{}); ok {
+			if text, ok := itemMap["text"].(string); ok {
+				if strings.Contains(text, "You are a text-only language model and do not possess visual perception") {
+					hasImagePrompt = true
+					break
+				}
+			}
+		}
+	}
+
+	// 只有在没有注入过的情况下才注入
+	if !hasImagePrompt {
+		system = append(system, map[string]interface{}{
+			"type": "text",
+			"text": ImageSystemPrompt,
+		})
+		reqBody["system"] = system
+	}
+
 	messages, ok := reqBody["messages"].([]interface{})
 	if !ok {
 		return
 	}
 
 	imgId := 1
-for _, msg := range messages {
+	for _, msg := range messages {
 		msgMap, ok := msg.(map[string]interface{})
 		if !ok {
 			continue
@@ -366,12 +404,10 @@ for _, msg := range messages {
 			itemType, _ := itemMap["type"].(string)
 
 			if itemType == "image" {
-				// 存储图片到缓存
 				source, _ := itemMap["source"].(map[string]interface{})
 				cacheId := fmt.Sprintf("%s_Image#%d", sessionId, imgId)
 				globalImageCache.StoreImage(cacheId, source)
 
-				// 替换为文本占位符
 				content[i] = map[string]interface{}{
 					"type": "text",
 					"text": fmt.Sprintf("[Image #%d]This is an image, if you need to view or analyze it, you need to extract the imageId", imgId),
@@ -379,11 +415,9 @@ for _, msg := range messages {
 				imgId++
 			} else if itemType == "text" {
 				text, _ := itemMap["text"].(string)
-				// 移除旧的图片标记
 				text = removeImageMarkers(text)
 				itemMap["text"] = text
 			} else if itemType == "tool_result" {
-				// 处理 tool_result 中的图片
 				if toolContent, ok := itemMap["content"].([]interface{}); ok {
 					for j, tc := range toolContent {
 						tcMap, ok := tc.(map[string]interface{})
@@ -516,6 +550,12 @@ func (a *ImageAgentV2) handleAnalyzeImage(input map[string]interface{}, reqBody 
 		}
 	} else if imageId, ok := input["imageId"].(string); ok {
 		imageIdList = append(imageIdList, imageId)
+	} else {
+		return "", fmt.Errorf("invalid imageId format, expected string or array of strings")
+	}
+
+	if len(imageIdList) == 0 {
+		return "", fmt.Errorf("no valid imageId provided")
 	}
 
 	// 构建图片消息
@@ -531,18 +571,26 @@ func (a *ImageAgentV2) handleAnalyzeImage(input map[string]interface{}, reqBody 
 		}
 	}
 
-	// 获取任务描述
-	task, _ := input["task"].(string)
-	if task != "" {
-		imageMessages = append(imageMessages, map[string]interface{}{
-			"type": "text",
-			"text": task,
-		})
+	if len(imageMessages) == 0 {
+		return "", fmt.Errorf("no valid images found in cache")
 	}
+
+	// 获取任务描述
+	task, ok := input["task"].(string)
+	if !ok || task == "" {
+		return "", fmt.Errorf("missing or invalid task parameter")
+	}
+	imageMessages = append(imageMessages, map[string]interface{}{
+		"type": "text",
+		"text": task,
+	})
 
 	// 获取 regions 信息
 	if regions, ok := input["regions"].([]interface{}); ok && len(regions) > 0 {
-		regionsJSON, _ := json.Marshal(regions)
+		regionsJSON, err := json.Marshal(regions)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal regions: %w", err)
+		}
 		imageMessages = append(imageMessages, map[string]interface{}{
 			"type": "text",
 			"text": "Regions: " + string(regionsJSON),
@@ -576,12 +624,15 @@ Always ensure that your response reflects a clear, accurate interpretation of th
 		"stream": false,
 	}
 
-	reqBodyBytes, _ := json.Marshal(requestBody)
+	reqBodyBytes, err := json.Marshal(requestBody)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal request body: %w", err)
+	}
 	url := fmt.Sprintf("http://127.0.0.1:%s/v1/messages", port)
 
 	req, err := http.NewRequest("POST", url, bytes.NewReader(reqBodyBytes))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -589,17 +640,21 @@ Always ensure that your response reflects a clear, accurate interpretation of th
 		req.Header.Set("x-api-key", apiKey)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	client := createHTTPClient(cfg)
+	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response body: %w", err)
+	}
 
 	var result map[string]interface{}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "analyzeImage Error", nil
+		return "", fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
 	if content, ok := result["content"].([]interface{}); ok && len(content) > 0 {
@@ -610,14 +665,14 @@ Always ensure that your response reflects a clear, accurate interpretation of th
 		}
 	}
 
-	return "analyzeImage Error", nil
+	return "", fmt.Errorf("failed to extract analysis result: %s", string(body))
 }
 
 // handleImageGeneration 处理图片生成
 func (a *ImageAgentV2) handleImageGeneration(input map[string]interface{}, cfg *config.Config) (string, error) {
 	prompt, ok := input["prompt"].(string)
 	if !ok || prompt == "" {
-		return "", fmt.Errorf("missing prompt")
+		return "", fmt.Errorf("missing or invalid prompt")
 	}
 
 	// 获取 provider 配置
@@ -635,6 +690,10 @@ func (a *ImageAgentV2) handleImageGeneration(input map[string]interface{}, cfg *
 	}
 
 	apiKey := provider.APIKey
+	if apiKey == "" {
+		return "", fmt.Errorf("API key not configured for image generation")
+	}
+
 	host := provider.Host
 	if host == "" {
 		host = "https://api.openai.com/v1/images/generations"
@@ -657,28 +716,39 @@ func (a *ImageAgentV2) handleImageGeneration(input map[string]interface{}, cfg *
 		reqData["size"] = size
 	}
 
-	reqBodyBytes, _ := json.Marshal(reqData)
+	reqBodyBytes, err := json.Marshal(reqData)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal request data: %w", err)
+	}
+
 	req, err := http.NewRequest("POST", host, bytes.NewReader(reqBodyBytes))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	client := createHTTPClient(cfg)
+	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// 检查响应状态码
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("image generation failed with status %d: %s", resp.StatusCode, string(body))
+	}
 
 	var result map[string]interface{}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return string(body), nil
+		return "", fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
 	if data, ok := result["data"].([]interface{}); ok && len(data) > 0 {
@@ -692,7 +762,7 @@ func (a *ImageAgentV2) handleImageGeneration(input map[string]interface{}, cfg *
 		}
 	}
 
-	return string(body), nil
+	return "", fmt.Errorf("failed to extract generated image: %s", string(body))
 }
 
 // removeImageMarkers 移除图片标记
@@ -710,6 +780,31 @@ func removeImageMarkers(text string) string {
 		text = text[:start] + text[start+end+1:]
 	}
 	return text
+}
+
+// createHTTPClient 创建配置好的 HTTP 客户端
+func createHTTPClient(cfg *config.Config) *http.Client {
+	timeout := 60 * time.Second
+	if timeoutMs := cfg.Get("API_TIMEOUT_MS"); timeoutMs != "" {
+		if ms, err := time.ParseDuration(timeoutMs + "ms"); err == nil {
+			timeout = ms
+		}
+	}
+
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
+	}
+
+	if proxyURL := cfg.Get("PROXY_URL"); proxyURL != "" {
+		if proxy, err := url.Parse(proxyURL); err == nil {
+			transport.Proxy = http.ProxyURL(proxy)
+		}
+	}
+
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+	}
 }
 
 // GenerateSessionId 生成会话 ID

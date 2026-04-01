@@ -2,6 +2,8 @@ package transformer
 
 import (
 	"encoding/json"
+	"fmt"
+	"math/rand"
 	"os"
 	"strings"
 )
@@ -476,7 +478,7 @@ func ReasoningTransformer(req map[string]any, _ string) map[string]any {
 	if reasoning, ok := req["reasoning"].(map[string]any); ok {
 		if maxTokens, ok := reasoning["max_tokens"].(float64); ok {
 			req["thinking"] = map[string]any{
-				"type":         "enabled",
+				"type":          "enabled",
 				"budget_tokens": int(maxTokens),
 			}
 			req["enable_thinking"] = true
@@ -488,9 +490,9 @@ func ReasoningTransformer(req map[string]any, _ string) map[string]any {
 // TooluseTransformer handles tool mode with ExitTool injection
 func TooluseTransformer(req map[string]any, _ string) map[string]any {
 	// Add system reminder for tool mode
-	systemReminder := `<system-reminder>Tool mode is active. The user expects you to proactively execute the most suitable tool to help complete the task. 
-Before invoking a tool, you must carefully evaluate whether it matches the current task. If no available tool is appropriate for the task, you MUST call the \`ExitTool\` to exit tool mode — this is the only valid way to terminate tool mode.
-Always prioritize completing the user's task effectively and efficiently by using tools whenever appropriate.</system-reminder>`
+	systemReminder := "<system-reminder>Tool mode is active. The user expects you to proactively execute the most suitable tool to help complete the task.\n" +
+		"Before invoking a tool, you must carefully evaluate whether it matches the current task. If no available tool is appropriate for the task, you MUST call the `ExitTool` to exit tool mode — this is the only valid way to terminate tool mode.\n" +
+		"Always prioritize completing the user's task effectively and efficiently by using tools whenever appropriate.</system-reminder>"
 
 	// Add to system messages
 	if messages, ok := req["messages"].([]any); ok {
@@ -588,6 +590,40 @@ func OpenAIToAnthropicResponse(respBody []byte) []byte {
 	if choices, ok := openaiResp["choices"].([]any); ok && len(choices) > 0 {
 		if choice, ok := choices[0].(map[string]any); ok {
 			if message, ok := choice["message"].(map[string]any); ok {
+				// 处理annotations（web_search工具）
+				if annotations, ok := message["annotations"].([]any); ok && len(annotations) > 0 {
+					// 生成唯一ID
+					id := "srvtoolu_" + generateUUID()
+					// 添加server_tool_use
+					content = append(content, map[string]any{
+						"type": "server_tool_use",
+						"id":   id,
+						"name": "web_search",
+						"input": map[string]any{
+							"query": "",
+						},
+					})
+					// 添加web_search_tool_result
+					var searchResults []any
+					for _, ann := range annotations {
+						if annotation, ok := ann.(map[string]any); ok {
+							if urlCitation, ok := annotation["url_citation"].(map[string]any); ok {
+								searchResults = append(searchResults, map[string]any{
+									"type":  "web_search_result",
+									"url":   urlCitation["url"],
+									"title": urlCitation["title"],
+								})
+							}
+						}
+					}
+					content = append(content, map[string]any{
+						"type":        "web_search_tool_result",
+						"tool_use_id": id,
+						"content":     searchResults,
+					})
+				}
+
+				// 处理content
 				if text, ok := message["content"].(string); ok && text != "" {
 					content = append(content, map[string]any{
 						"type": "text",
@@ -642,14 +678,33 @@ func OpenAIToAnthropicResponse(respBody []byte) []byte {
 
 	// 转换usage
 	if usage, ok := openaiResp["usage"].(map[string]any); ok {
-		anthropicResp["usage"] = map[string]any{
+		usageMap := map[string]any{
 			"input_tokens":  usage["prompt_tokens"],
 			"output_tokens": usage["completion_tokens"],
 		}
+		// 添加缓存token信息
+		if promptDetails, ok := usage["prompt_tokens_details"].(map[string]any); ok {
+			if cachedTokens, ok := promptDetails["cached_tokens"].(float64); ok {
+				usageMap["cache_read_input_tokens"] = int(cachedTokens)
+			}
+		}
+		anthropicResp["usage"] = usageMap
 	}
 
 	result, _ := json.Marshal(anthropicResp)
 	return result
+}
+
+// 生成UUID
+func generateUUID() string {
+	uuid := make([]byte, 16)
+	_, err := rand.Read(uuid)
+	if err != nil {
+		return ""
+	}
+	uuid[6] = (uuid[6] & 0x0f) | 0x40
+	uuid[8] = (uuid[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:])
 }
 
 func BuildDefaultRegistry() *TransformerRegistry {
@@ -666,28 +721,28 @@ func BuildDefaultRegistry() *TransformerRegistry {
 	registry.RegisterRequest("groq", GroqTransformer)
 	registry.RegisterRequest("vercel", VercelTransformer)
 	registry.RegisterRequest("openrouter", func(req map[string]any, _ string) map[string]any { return req })
-	
+
 	// Cerebras transformer
 	cerebrasTransformer := NewCerebrasTransformer()
 	registry.RegisterRequest("cerebras", cerebrasTransformer.TransformRequest)
-	
+
 	// Vertex AI transformers
 	vertexClaudeTransformer := NewVertexClaudeTransformer()
 	registry.RegisterRequest("vertex-claude", vertexClaudeTransformer.TransformRequest)
-	
+
 	vertexGeminiTransformer := NewVertexGeminiTransformer()
 	registry.RegisterRequest("vertex-gemini", vertexGeminiTransformer.TransformRequest)
-	
+
 	// Additional provider transformers
 	sambanovaTransformer := NewSambanovaTransformer()
 	registry.RegisterRequest("sambanova", sambanovaTransformer.TransformRequest)
-	
+
 	hyperbolicTransformer := NewHyperbolicTransformer()
 	registry.RegisterRequest("hyperbolic", hyperbolicTransformer.TransformRequest)
-	
+
 	novitaTransformer := NewNovitaTransformer()
 	registry.RegisterRequest("novita", novitaTransformer.TransformRequest)
-	
+
 	fireworksTransformer := NewFireworksTransformer()
 	registry.RegisterRequest("fireworks", fireworksTransformer.TransformRequest)
 

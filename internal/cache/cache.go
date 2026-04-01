@@ -118,6 +118,6 @@ func (c *StringCache) Values() []interface{} {
 }
 
 var (
-	SessionUsage    = NewStringCache(100)
+	SessionUsage   = NewStringCache(100)
 	SessionProject = NewStringCache(1000)
 )

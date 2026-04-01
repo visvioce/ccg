@@ -2,11 +2,14 @@ package provider
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/musistudio/ccg/internal/cache"
 	"github.com/musistudio/ccg/internal/config"
@@ -20,10 +23,35 @@ type ProviderService struct {
 }
 
 func New(cfg *config.Config, registry *transformer.TransformerRegistry) *ProviderService {
-	return &ProviderService{
-		cfg:        cfg,
-		registry:   registry,
-		httpClient: &http.Client{},
+	ps := &ProviderService{
+		cfg:      cfg,
+		registry: registry,
+	}
+	ps.httpClient = ps.createHTTPClient()
+	return ps
+}
+
+func (s *ProviderService) createHTTPClient() *http.Client {
+	timeout := 60 * time.Second
+	if timeoutMs := s.cfg.Get("API_TIMEOUT_MS"); timeoutMs != "" {
+		if ms, err := time.ParseDuration(timeoutMs + "ms"); err == nil {
+			timeout = ms
+		}
+	}
+
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
+	}
+
+	if proxyURL := s.cfg.Get("PROXY_URL"); proxyURL != "" {
+		if proxy, err := url.Parse(proxyURL); err == nil {
+			transport.Proxy = http.ProxyURL(proxy)
+		}
+	}
+
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
 	}
 }
 
@@ -124,6 +152,10 @@ func (s *ProviderService) GetDefaultHost(providerName string) string {
 		return host
 	}
 	return "https://api.openai.com/v1/chat/completions"
+}
+
+func (s *ProviderService) GetHTTPClient() *http.Client {
+	return s.httpClient
 }
 
 func (s *ProviderService) GetDefaultTransforms(providerName string) []string {

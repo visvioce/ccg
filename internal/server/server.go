@@ -288,17 +288,17 @@ func (s *Server) handleGetConfig(c *gin.Context) {
 
 	// Build full config in Web UI expected format
 	config := map[string]any{
-		"Providers": uiProviders,
-		"Router":    uiRouter,
-		"transformers": []map[string]any{},
-		"LOG":       s.cfg.Get("LOG") == "true",
-		"LOG_LEVEL": s.cfg.Get("LOG_LEVEL"),
-		"CLAUDE_PATH": s.cfg.Get("CLAUDE_PATH"),
-		"HOST":        s.cfg.Get("HOST"),
-		"PORT":        s.cfg.GetInt("PORT"),
-		"APIKEY":      s.cfg.Get("APIKEY"),
+		"Providers":      uiProviders,
+		"Router":         uiRouter,
+		"transformers":   []map[string]any{},
+		"LOG":            s.cfg.Get("LOG") == "true",
+		"LOG_LEVEL":      s.cfg.Get("LOG_LEVEL"),
+		"CLAUDE_PATH":    s.cfg.Get("CLAUDE_PATH"),
+		"HOST":           s.cfg.Get("HOST"),
+		"PORT":           s.cfg.GetInt("PORT"),
+		"APIKEY":         s.cfg.Get("APIKEY"),
 		"API_TIMEOUT_MS": s.cfg.Get("API_TIMEOUT_MS"),
-		"PROXY_URL":   s.cfg.Get("PROXY_URL"),
+		"PROXY_URL":      s.cfg.Get("PROXY_URL"),
 	}
 
 	c.JSON(200, config)
@@ -648,6 +648,45 @@ func (s *Server) handleClearLogs(c *gin.Context) {
 	c.JSON(200, gin.H{"success": true})
 }
 
+type modelConfig struct {
+	model          string
+	providerName   string
+	providerHost   string
+	providerAPIKey string
+	transforms     []string
+}
+
+func (s *Server) getModelConfig(model string, providers []config.Provider) *modelConfig {
+	for _, p := range providers {
+		for _, m := range p.Models {
+			if m == model || model == p.Name+","+m {
+				cfg := &modelConfig{
+					model:          model,
+					providerName:   p.Name,
+					providerHost:   p.Host,
+					providerAPIKey: p.APIKey,
+					transforms:     s.cfg.GetProviderTransform(p.Name, model),
+				}
+				if cfg.providerHost == "" {
+					cfg.providerHost = s.providerService.GetDefaultHost(cfg.providerName)
+				}
+				return cfg
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Server) getActualModel(model string) string {
+	if strings.Contains(model, ",") {
+		parts := strings.SplitN(model, ",", 2)
+		if len(parts) == 2 {
+			return parts[1]
+		}
+	}
+	return model
+}
+
 func (s *Server) handleV1Messages(c *gin.Context) {
 	// 1. 获取请求体
 	bodyVal, _ := c.Get("requestBody")
@@ -678,222 +717,257 @@ func (s *Server) handleV1Messages(c *gin.Context) {
 	}
 
 	// 3. 路由选择provider和model
-	providerHost := ""
-	providerAPIKey := ""
-	transforms := []string{}
-
+	providers := s.cfg.GetProviders()
 	if providerName == "" {
-		providers := s.cfg.GetProviders()
 		routerResult := s.router.Route(toRequestBody(body), sessionId)
 		model = routerResult.Model
+	}
 
-		for _, p := range providers {
-			for _, m := range p.Models {
-				if m == model || model == p.Name+","+m {
-					providerName = p.Name
-					providerHost = p.Host
-					providerAPIKey = p.APIKey
-					transforms = s.cfg.GetProviderTransform(p.Name, model)
-					break
+	// 4. 构建模型列表（主要模型 + 备用模型）
+	var modelList []string
+	modelList = append(modelList, model)
+	if fallbackCfg := s.cfg.GetFallback(); fallbackCfg != nil {
+		if fallbackModels, ok := fallbackCfg[model]; ok {
+			modelList = append(modelList, fallbackModels...)
+		}
+	}
+
+	log.Printf("Fallback: Starting request with model list: %v", modelList)
+
+	var lastErr error
+
+	// 5. 按顺序尝试所有模型
+	for idx, tryModel := range modelList {
+		log.Printf("Fallback: Trying model %d/%d: %s", idx+1, len(modelList), tryModel)
+
+		var cfg *modelConfig
+		if idx == 0 && providerName != "" {
+			if p := s.cfg.GetProvider(providerName); p != nil {
+				cfg = &modelConfig{
+					model:          tryModel,
+					providerName:   p.Name,
+					providerHost:   p.Host,
+					providerAPIKey: p.APIKey,
+					transforms:     s.cfg.GetProviderTransform(providerName, tryModel),
+				}
+				if cfg.providerHost == "" {
+					cfg.providerHost = s.providerService.GetDefaultHost(cfg.providerName)
 				}
 			}
-			if providerName != "" {
-				break
+		}
+		if cfg == nil {
+			cfg = s.getModelConfig(tryModel, providers)
+		}
+		if cfg == nil {
+			log.Printf("Fallback: Failed to find config for model %s", tryModel)
+			lastErr = fmt.Errorf("model not found: %s", tryModel)
+			continue
+		}
+
+		if cfg.providerName == "" {
+			cfg.providerName = "openai"
+		}
+
+		if p := s.cfg.GetProvider(cfg.providerName); p != nil {
+			cfg.providerHost = p.Host
+			cfg.providerAPIKey = p.APIKey
+			cfg.transforms = s.cfg.GetProviderTransform(cfg.providerName, cfg.model)
+		}
+
+		if cfg.providerHost == "" {
+			cfg.providerHost = s.providerService.GetDefaultHost(cfg.providerName)
+		}
+
+		// 6. 检查是否流式响应
+		stream := false
+		if bstream, ok := body["stream"].(bool); ok {
+			stream = bstream
+		}
+
+		// 7. 处理请求
+		bodyCopy := make(map[string]any)
+		for k, v := range body {
+			bodyCopy[k] = v
+		}
+		actualModel := s.getActualModel(cfg.model)
+		bodyCopy["model"] = actualModel
+
+		if agent.ShouldHandleAgentTools(bodyCopy) {
+			agent.AddAgentToolsToRequest(bodyCopy)
+		}
+
+		transformedBody := s.transformer.TransformRequest(bodyCopy, cfg.providerName, cfg.transforms)
+		reqBody, _ := json.Marshal(transformedBody)
+
+		log.Printf("Fallback: providerName=%s, providerHost=%s, model=%s", cfg.providerName, cfg.providerHost, actualModel)
+
+		startTime := time.Now()
+		proxyReq, err := http.NewRequest("POST", cfg.providerHost, bytes.NewReader(reqBody))
+		if err != nil {
+			log.Printf("Fallback: Failed to create request for model %s: %v", tryModel, err)
+			lastErr = err
+			continue
+		}
+
+		proxyReq.Header.Set("Content-Type", "application/json")
+		if cfg.providerAPIKey != "" {
+			proxyReq.Header.Set("Authorization", "Bearer "+cfg.providerAPIKey)
+		}
+		if stream {
+			proxyReq.Header.Set("Accept", "text/event-stream")
+		}
+
+		resp, err := s.providerService.GetHTTPClient().Do(proxyReq)
+		if err != nil {
+			log.Printf("Fallback: Request failed for model %s: %v", tryModel, err)
+			lastErr = err
+			continue
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 400 {
+			log.Printf("Fallback: Request failed for model %s with status %d", tryModel, resp.StatusCode)
+			lastErr = fmt.Errorf("HTTP error %d", resp.StatusCode)
+			continue
+		}
+
+		log.Printf("Fallback: Success using model %s", tryModel)
+		duration := time.Since(startTime)
+
+		for k, v := range resp.Header {
+			if k != "Content-Length" && k != "Transfer-Encoding" {
+				c.Header(k, v[0])
 			}
 		}
-	}
 
-	if providerName == "" {
-		providerName = "openai"
-	}
-
-	if p := s.cfg.GetProvider(providerName); p != nil {
-		providerHost = p.Host
-		providerAPIKey = p.APIKey
-		transforms = s.cfg.GetProviderTransform(providerName, model)
-	}
-
-	if providerHost == "" {
-		providerHost = s.providerService.GetDefaultHost(providerName)
-	}
-
-	// 4. 检查是否流式响应
-	stream := false
-	if bstream, ok := body["stream"].(bool); ok {
-		stream = bstream
-	}
-
-	// 5. 更新model - 提取实际的model名称（去掉provider前缀）
-	actualModel := model
-	if strings.Contains(model, ",") {
-		parts := strings.SplitN(model, ",", 2)
-		if len(parts) == 2 {
-			actualModel = parts[1]
-		}
-	}
-	body["model"] = actualModel
-
-	// 6. 处理agent工具
-	if agent.ShouldHandleAgentTools(body) {
-		agent.AddAgentToolsToRequest(body)
-	}
-
-	// 7. 转换请求格式（Anthropic -> OpenAI）
-	transformedBody := s.transformer.TransformRequest(body, providerName, transforms)
-	reqBody, _ := json.Marshal(transformedBody)
-
-	// Debug: 打印转换后的请求
-	log.Printf("Debug: providerName=%s, providerHost=%s", providerName, providerHost)
-	log.Printf("Debug: transformedBody=%s", string(reqBody))
-
-	// 8. 发送请求到provider
-	startTime := time.Now()
-	proxyReq, err := http.NewRequest("POST", providerHost, bytes.NewReader(reqBody))
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
-
-	proxyReq.Header.Set("Content-Type", "application/json")
-	if providerAPIKey != "" {
-		proxyReq.Header.Set("Authorization", "Bearer "+providerAPIKey)
-	}
-	if stream {
-		proxyReq.Header.Set("Accept", "text/event-stream")
-	}
-
-	resp, err := http.DefaultClient.Do(proxyReq)
-	if err != nil {
-		c.JSON(502, gin.H{"error": "Failed to proxy request: " + err.Error()})
-		return
-	}
-	defer resp.Body.Close()
-
-	duration := time.Since(startTime)
-
-	// 9. 复制响应头
-	for k, v := range resp.Header {
-		if k != "Content-Length" && k != "Transfer-Encoding" {
-			c.Header(k, v[0])
-		}
-	}
-
-	// 10. 处理响应
-	if stream {
-		// 流式响应：转换格式后转发
-		c.Header("Content-Type", "text/event-stream")
-		c.Header("Cache-Control", "no-cache")
-		c.Header("Connection", "keep-alive")
-		c.Status(resp.StatusCode)
-		flusher, ok := c.Writer.(http.Flusher)
-		if !ok {
-			c.JSON(500, gin.H{"error": "Streaming not supported"})
-			return
-		}
-
-		// 使用流式转换器
-		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 4096), 1024*1024) // 增加缓冲区大小
-		
-		for scanner.Scan() {
-			line := scanner.Text()
-			
-			// 跳过空行
-			if strings.TrimSpace(line) == "" {
-				continue
+		if stream {
+			c.Header("Content-Type", "text/event-stream")
+			c.Header("Cache-Control", "no-cache")
+			c.Header("Connection", "keep-alive")
+			c.Status(resp.StatusCode)
+			flusher, ok := c.Writer.(http.Flusher)
+			if !ok {
+				c.JSON(500, gin.H{"error": "Streaming not supported"})
+				return
 			}
-			
-			// 处理 SSE 格式的数据行
-			if strings.HasPrefix(line, "data: ") {
-				data := strings.TrimPrefix(line, "data: ")
-				
-				// 处理 [DONE] 标记
-				if data == "[DONE]" {
-					fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
-					flusher.Flush()
+
+			scanner := bufio.NewScanner(resp.Body)
+			scanner.Buffer(make([]byte, 4096), 1024*1024)
+
+			for scanner.Scan() {
+				line := scanner.Text()
+				if strings.TrimSpace(line) == "" {
 					continue
 				}
-				
-				// 转换 chunk 格式
-				converted := transformer.ProcessStreamChunk([]byte(data), providerName)
-				fmt.Fprintf(c.Writer, "data: %s\n\n", converted)
-				flusher.Flush()
-			}
-		}
-	} else {
-		// 非流式响应：读取并转换
-		respBody, _ := io.ReadAll(resp.Body)
-		log.Printf("Debug: respBody length=%d", len(respBody))
-		if len(respBody) > 0 {
-			log.Printf("Debug: respBody=%s", string(respBody[:min(500, len(respBody))]))
-		}
-
-		// 处理使用统计
-		if resp.StatusCode == 200 {
-			var respData map[string]any
-			if err := json.Unmarshal(respBody, &respData); err == nil {
-				if usage, ok := respData["usage"].(map[string]any); ok {
-					inputTokens := 0
-					outputTokens := 0
-					if it, ok := usage["input_tokens"].(float64); ok {
-						inputTokens = int(it)
-					}
-					if ot, ok := usage["output_tokens"].(float64); ok {
-						outputTokens = int(ot)
-					}
-					plugin.RecordTokenSpeed(providerName, model, inputTokens, outputTokens, duration)
+				if strings.HasPrefix(line, "data: ") {
+					data := strings.TrimPrefix(line, "data: ")
 					if sessionId != "" {
-						cache.SessionUsage.Put(sessionId, cache.Usage{
-							InputTokens:  inputTokens,
-							OutputTokens: outputTokens,
-						})
+						var chunkData map[string]any
+						if err := json.Unmarshal([]byte(data), &chunkData); err == nil {
+							if usage, ok := chunkData["usage"].(map[string]any); ok {
+								inputTokens := 0
+								outputTokens := 0
+								if it, ok := usage["prompt_tokens"].(float64); ok {
+									inputTokens = int(it)
+								} else if it, ok := usage["input_tokens"].(float64); ok {
+									inputTokens = int(it)
+								}
+								if ot, ok := usage["completion_tokens"].(float64); ok {
+									outputTokens = int(ot)
+								} else if ot, ok := usage["output_tokens"].(float64); ok {
+									outputTokens = int(ot)
+								}
+								cache.SessionUsage.Put(sessionId, cache.Usage{
+									InputTokens:  inputTokens,
+									OutputTokens: outputTokens,
+								})
+							}
+						}
+					}
+					if data == "[DONE]" {
+						fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
+						flusher.Flush()
+						continue
+					}
+					converted := transformer.ProcessStreamChunk([]byte(data), cfg.providerName)
+					fmt.Fprintf(c.Writer, "data: %s\n\n", converted)
+					flusher.Flush()
+				}
+			}
+		} else {
+			respBody, _ := io.ReadAll(resp.Body)
+			log.Printf("Fallback: respBody length=%d", len(respBody))
+			if len(respBody) > 0 {
+				log.Printf("Fallback: respBody=%s", string(respBody[:min(500, len(respBody))]))
+			}
+
+			if resp.StatusCode == 200 {
+				var respData map[string]any
+				if err := json.Unmarshal(respBody, &respData); err == nil {
+					if usage, ok := respData["usage"].(map[string]any); ok {
+						inputTokens := 0
+						outputTokens := 0
+						if it, ok := usage["input_tokens"].(float64); ok {
+							inputTokens = int(it)
+						}
+						if ot, ok := usage["output_tokens"].(float64); ok {
+							outputTokens = int(ot)
+						}
+						plugin.RecordTokenSpeed(cfg.providerName, cfg.model, inputTokens, outputTokens, duration)
+						if sessionId != "" {
+							cache.SessionUsage.Put(sessionId, cache.Usage{
+								InputTokens:  inputTokens,
+								OutputTokens: outputTokens,
+							})
+						}
 					}
 				}
 			}
-		}
 
-		// 11. 处理 Agent 工具调用（非流式响应）
-		if resp.StatusCode == 200 {
-			var respData map[string]any
-			if err := json.Unmarshal(respBody, &respData); err == nil {
-				// 检查是否有工具调用
-				if choices, ok := respData["choices"].([]any); ok && len(choices) > 0 {
-					if choice, ok := choices[0].(map[string]any); ok {
-						if message, ok := choice["message"].(map[string]any); ok {
-							if toolCalls, ok := message["tool_calls"].([]any); ok && len(toolCalls) > 0 {
-								// 处理 Agent 工具调用
-								for _, tc := range toolCalls {
-									if tcMap, ok := tc.(map[string]any); ok {
-										if function, ok := tcMap["function"].(map[string]any); ok {
-											toolName, _ := function["name"].(string)
-											if toolName != "" {
-												var input map[string]any
-												if args, ok := function["arguments"].(string); ok {
-													json.Unmarshal([]byte(args), &input)
-												}
-																							// 调用 Agent 处理工具
-																							result, err := agent.HandleAgentToolCallV2(toolName, input, body, s.cfg, sessionId)
-																							if err == nil && result != "" {
-																								// 将工具结果添加到响应中
-																								message["content"] = result
-																								delete(message, "tool_calls")
-																								// 重新序列化响应
-																								respBody, _ = json.Marshal(respData)
-																							}
-																						}
-																					}
-																				}
-																			}
-																		}
-																	}
-																}
-															}
-														}
+			if resp.StatusCode == 200 {
+				var respData map[string]any
+				if err := json.Unmarshal(respBody, &respData); err == nil {
+					if choices, ok := respData["choices"].([]any); ok && len(choices) > 0 {
+						if choice, ok := choices[0].(map[string]any); ok {
+							if message, ok := choice["message"].(map[string]any); ok {
+								if toolCalls, ok := message["tool_calls"].([]any); ok && len(toolCalls) > 0 {
+									for _, tc := range toolCalls {
+										if tcMap, ok := tc.(map[string]any); ok {
+											if function, ok := tcMap["function"].(map[string]any); ok {
+												toolName, _ := function["name"].(string)
+												if toolName != "" {
+													var input map[string]any
+													if args, ok := function["arguments"].(string); ok {
+														json.Unmarshal([]byte(args), &input)
 													}
-		// 12. 转换响应格式（OpenAI -> Anthropic）
-		transformedResp := s.transformer.TransformResponse(respBody, providerName, transforms)
-		log.Printf("Debug: transformedResp length=%d", len(transformedResp))
-		c.Data(resp.StatusCode, "application/json", transformedResp)
+													result, err := agent.HandleAgentToolCallV2(toolName, input, bodyCopy, s.cfg, sessionId)
+													if err == nil && result != "" {
+														message["content"] = result
+														delete(message, "tool_calls")
+														respBody, _ = json.Marshal(respData)
+													}
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+			transformedResp := s.transformer.TransformResponse(respBody, cfg.providerName, cfg.transforms)
+			log.Printf("Fallback: transformedResp length=%d", len(transformedResp))
+			c.Data(resp.StatusCode, "application/json", transformedResp)
+		}
+		return
+	}
+
+	log.Printf("Fallback: All models failed, returning last error")
+	if lastErr != nil {
+		c.JSON(502, gin.H{"error": "All fallback models failed: " + lastErr.Error()})
+	} else {
+		c.JSON(502, gin.H{"error": "All fallback models failed"})
 	}
 }
 
@@ -905,95 +979,135 @@ func (s *Server) handleV1ChatCompletions(c *gin.Context) {
 	}
 
 	model, _ := body["model"].(string)
-	providerName := ""
-	providerHost := ""
-	providerAPIKey := ""
-	transforms := []string{}
-
 	sessionId := ""
 
 	providers := s.cfg.GetProviders()
 	routerResult := s.router.Route(toRequestBody(body), sessionId)
 	model = routerResult.Model
 
-	for _, p := range providers {
-		for _, m := range p.Models {
-			if m == model || model == p.Name+","+m {
-				providerName = p.Name
-				providerHost = p.Host
-				providerAPIKey = p.APIKey
-				transforms = s.cfg.GetProviderTransform(p.Name, model)
+	var modelList []string
+	modelList = append(modelList, model)
+	if fallbackCfg := s.cfg.GetFallback(); fallbackCfg != nil {
+		if fallbackModels, ok := fallbackCfg[model]; ok {
+			modelList = append(modelList, fallbackModels...)
+		}
+	}
+
+	log.Printf("Fallback: Starting chat completions request with model list: %v", modelList)
+
+	var lastErr error
+
+	for idx, tryModel := range modelList {
+		log.Printf("Fallback: Trying chat completions model %d/%d: %s", idx+1, len(modelList), tryModel)
+
+		providerName := ""
+		providerHost := ""
+		providerAPIKey := ""
+		transforms := []string{}
+
+		for _, p := range providers {
+			for _, m := range p.Models {
+				if m == tryModel || tryModel == p.Name+","+m {
+					providerName = p.Name
+					providerHost = p.Host
+					providerAPIKey = p.APIKey
+					transforms = s.cfg.GetProviderTransform(p.Name, tryModel)
+					break
+				}
+			}
+			if providerName != "" {
 				break
 			}
 		}
-		if providerName != "" {
-			break
+
+		if providerName == "" {
+			providerName = "openai"
 		}
-	}
 
-	if providerName == "" {
-		providerName = "openai"
-	}
+		if p := s.cfg.GetProvider(providerName); p != nil {
+			providerHost = p.Host
+			providerAPIKey = p.APIKey
+			transforms = s.cfg.GetProviderTransform(providerName, tryModel)
+		}
 
-	if p := s.cfg.GetProvider(providerName); p != nil {
-		providerHost = p.Host
-		providerAPIKey = p.APIKey
-		transforms = s.cfg.GetProviderTransform(providerName, model)
-	}
+		if providerHost == "" {
+			providerHost = s.providerService.GetDefaultHost(providerName)
+		}
 
-	if providerHost == "" {
-		providerHost = s.providerService.GetDefaultHost(providerName)
-	}
+		stream := false
+		if bstream, ok := body["stream"].(bool); ok {
+			stream = bstream
+		}
 
-	stream := false
-	if bstream, ok := body["stream"].(bool); ok {
-		stream = bstream
-	}
+		bodyCopy := make(map[string]any)
+		for k, v := range body {
+			bodyCopy[k] = v
+		}
+		actualModel := s.getActualModel(tryModel)
+		bodyCopy["model"] = actualModel
 
-	transformedBody := s.transformer.TransformRequest(body, providerName, transforms)
+		transformedBody := s.transformer.TransformRequest(bodyCopy, providerName, transforms)
+		reqBody, _ := json.Marshal(transformedBody)
 
-	reqBody, _ := json.Marshal(transformedBody)
+		url := providerHost
+		if !strings.HasSuffix(url, "/v1/chat/completions") {
+			url = strings.TrimRight(url, "/")
+			url += "/v1/chat/completions"
+		}
 
-	url := providerHost
-	if !strings.HasSuffix(url, "/v1/chat/completions") {
-		url = strings.TrimRight(url, "/")
-		url += "/v1/chat/completions"
-	}
+		req, err := http.NewRequest("POST", url, strings.NewReader(string(reqBody)))
+		if err != nil {
+			log.Printf("Fallback: Failed to create chat completions request for model %s: %v", tryModel, err)
+			lastErr = err
+			continue
+		}
 
-	req, err := http.NewRequest("POST", url, strings.NewReader(string(reqBody)))
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		req.Header.Set("Content-Type", "application/json")
+		if providerAPIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+providerAPIKey)
+		}
+		if stream {
+			req.Header.Set("Accept", "text/event-stream")
+		}
+
+		resp, err := s.providerService.GetHTTPClient().Transport.RoundTrip(req)
+		if err != nil {
+			log.Printf("Fallback: Chat completions request failed for model %s: %v", tryModel, err)
+			lastErr = err
+			continue
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 400 {
+			log.Printf("Fallback: Chat completions request failed for model %s with status %d", tryModel, resp.StatusCode)
+			lastErr = fmt.Errorf("HTTP error %d", resp.StatusCode)
+			continue
+		}
+
+		log.Printf("Fallback: Success using chat completions model %s", tryModel)
+
+		for k, v := range resp.Header {
+			c.Header(k, v[0])
+		}
+
+		if stream {
+			c.Stream(func(w io.Writer) bool {
+				_, err := io.Copy(w, resp.Body)
+				return err == nil
+			})
+		} else {
+			respBody, _ := io.ReadAll(resp.Body)
+			transformedResp := s.transformer.TransformResponse(respBody, providerName, transforms)
+			c.Data(resp.StatusCode, "application/json", transformedResp)
+		}
 		return
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	if providerAPIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+providerAPIKey)
-	}
-	if stream {
-		req.Header.Set("Accept", "text/event-stream")
-	}
-
-	resp, err := http.DefaultClient.Transport.RoundTrip(req)
-	if err != nil {
-		c.JSON(502, gin.H{"error": "Failed to proxy request: " + err.Error()})
-		return
-	}
-	defer resp.Body.Close()
-
-	for k, v := range resp.Header {
-		c.Header(k, v[0])
-	}
-
-	if stream {
-		c.Stream(func(w io.Writer) bool {
-			_, err := io.Copy(w, resp.Body)
-			return err == nil
-		})
+	log.Printf("Fallback: All chat completions models failed, returning last error")
+	if lastErr != nil {
+		c.JSON(502, gin.H{"error": "All fallback models failed: " + lastErr.Error()})
 	} else {
-		respBody, _ := io.ReadAll(resp.Body)
-		transformedResp := s.transformer.TransformResponse(respBody, providerName, transforms)
-		c.Data(resp.StatusCode, "application/json", transformedResp)
+		c.JSON(502, gin.H{"error": "All fallback models failed"})
 	}
 }
 

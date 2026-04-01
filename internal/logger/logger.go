@@ -23,10 +23,10 @@ const (
 
 type LogEntry struct {
 	Timestamp string         `json:"timestamp"`
-	Level     Level         `json:"level"`
-	Message   string        `json:"message"`
-	Source    string        `json:"source,omitempty"`
-	ReqID     string        `json:"req_id,omitempty"`
+	Level     Level          `json:"level"`
+	Message   string         `json:"message"`
+	Source    string         `json:"source,omitempty"`
+	ReqID     string         `json:"req_id,omitempty"`
 	Data      map[string]any `json:"data,omitempty"`
 }
 
@@ -41,7 +41,7 @@ type Logger struct {
 
 var (
 	defaultLogger *Logger
-	once         sync.Once
+	once          sync.Once
 )
 
 func GetLogger() *Logger {
@@ -155,9 +155,9 @@ func (l *Logger) GetLogFiles() []map[string]any {
 		}
 		info, _ := e.Info()
 		files = append(files, map[string]any{
-			"name":        e.Name(),
-			"path":        filepath.Join(l.logDir, e.Name()),
-			"size":        info.Size(),
+			"name":         e.Name(),
+			"path":         filepath.Join(l.logDir, e.Name()),
+			"size":         info.Size(),
 			"lastModified": info.ModTime().Format(time.RFC3339),
 		})
 	}
@@ -195,8 +195,8 @@ func (l *Logger) Close() error {
 	return nil
 }
 
-func Debug(message string, data ...map[string]any)  { GetLogger().Debug(message, data...) }
-func Info(message string, data ...map[string]any)   { GetLogger().Info(message, data...) }
+func Debug(message string, data ...map[string]any) { GetLogger().Debug(message, data...) }
+func Info(message string, data ...map[string]any)  { GetLogger().Info(message, data...) }
 func Warn(message string, data ...map[string]any)  { GetLogger().Warn(message, data...) }
 func Error(message string, data ...map[string]any) { GetLogger().Error(message, data...) }
 func Fatal(message string, data ...map[string]any) { GetLogger().Fatal(message, data...) }

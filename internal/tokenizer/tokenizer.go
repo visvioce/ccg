@@ -28,8 +28,7 @@ func Init() error {
 // CountTokens 计算文本的 token 数量
 func CountTokens(text string) int {
 	if enc == nil {
-		// 如果 tiktoken 未初始化，使用近似计算
-		return len(text) / 4
+		return 0
 	}
 	tokens := enc.Encode(text, nil, nil)
 	return len(tokens)
@@ -77,27 +76,23 @@ type RequestBody struct {
 // CountRequestTokens 计算请求体的 token 数量
 func CountRequestTokens(body *RequestBody) int {
 	if enc == nil {
-		// 如果 tiktoken 未初始化，使用近似计算
-		return approximateTokenCount(body)
+		return 0
 	}
 
 	count := 0
 
-	// 每条消息的基础 token 开销
+	// Count messages
 	for _, msg := range body.Messages {
-		count += 4 // 每条消息的基础开销
 		count += countMessageTokens(&msg)
 	}
 
-	// System 消息
+	// Count system
 	if body.System != nil {
-		count += 3 // system 的基础开销
 		count += countSystemTokens(body.System)
 	}
 
-	// Tools
+	// Count tools
 	for _, tool := range body.Tools {
-		count += 15 // 每个工具的基础开销
 		if tool.Name != "" || tool.Description != "" {
 			count += CountTokens(tool.Name + tool.Description)
 		}
@@ -107,20 +102,12 @@ func CountRequestTokens(body *RequestBody) int {
 		}
 	}
 
-	// 回复的基础开销
-	count += 3
-
 	return count
 }
 
 // countMessageTokens 计算单条消息的 token 数量
 func countMessageTokens(msg *Message) int {
 	count := 0
-
-	// Role 的开销
-	if msg.Role != "" {
-		count += CountTokens(msg.Role)
-	}
 
 	// Content 的开销
 	switch content := msg.Content.(type) {
@@ -129,15 +116,30 @@ func countMessageTokens(msg *Message) int {
 	case json.RawMessage:
 		count += CountTokens(string(content))
 	case []interface{}:
-		// 处理多模态内容
 		for _, item := range content {
 			if itemMap, ok := item.(map[string]interface{}); ok {
-				if text, ok := itemMap["text"].(string); ok {
-					count += CountTokens(text)
-				}
-				// 图片内容估算
-				if itemMap["type"] == "image" {
-					count += 1024 // 图片的估算开销
+				itemType, _ := itemMap["type"].(string)
+				switch itemType {
+				case "text":
+					if text, ok := itemMap["text"].(string); ok {
+						count += CountTokens(text)
+					}
+				case "tool_use":
+					if input, ok := itemMap["input"]; ok {
+						inputBytes, _ := json.Marshal(input)
+						count += CountTokens(string(inputBytes))
+					}
+				case "tool_result":
+					var contentStr string
+					if c, ok := itemMap["content"].(string); ok {
+						contentStr = c
+					} else if itemMap["content"] != nil {
+						contentBytes, _ := json.Marshal(itemMap["content"])
+						contentStr = string(contentBytes)
+					}
+					count += CountTokens(contentStr)
+				case "image":
+					count += 1024
 				}
 			}
 		}
@@ -156,42 +158,21 @@ func countSystemTokens(system interface{}) int {
 	case []interface{}:
 		for _, item := range s {
 			if itemMap, ok := item.(map[string]interface{}); ok {
+				if itemMap["type"] != "text" {
+					continue
+				}
 				if text, ok := itemMap["text"].(string); ok {
 					count += CountTokens(text)
+				} else if textArray, ok := itemMap["text"].([]interface{}); ok {
+					for _, textPart := range textArray {
+						count += CountTokens(fmt.Sprint(textPart))
+					}
 				}
 			}
 		}
 	case json.RawMessage:
 		count += CountTokens(string(s))
 	}
-
-	return count
-}
-
-// approximateTokenCount 近似计算 token 数量（当 tiktoken 不可用时）
-func approximateTokenCount(body *RequestBody) int {
-	count := 0
-
-	for _, msg := range body.Messages {
-		count += 4
-		if text, ok := msg.Content.(string); ok {
-			count += len(text) / 4
-		}
-	}
-
-	if body.System != nil {
-		count += 3
-		if text, ok := body.System.(string); ok {
-			count += len(text) / 4
-		}
-	}
-
-	for _, tool := range body.Tools {
-		count += 15
-		count += len(tool.Name+tool.Description) / 4
-	}
-
-	count += 3
 
 	return count
 }
@@ -204,7 +185,6 @@ func CountTokensInMessages(messages []Message) int {
 
 	count := 0
 	for _, msg := range messages {
-		count += 4 // 基础开销
 		count += countMessageTokens(&msg)
 	}
 	return count
@@ -218,7 +198,6 @@ func CountTokensInTools(tools []Tool) int {
 
 	count := 0
 	for _, tool := range tools {
-		count += 15
 		count += CountTokens(tool.Name + tool.Description)
 		if tool.InputSchema != nil {
 			schemaBytes, _ := json.Marshal(tool.InputSchema)
