@@ -60,3 +60,4 @@ secrets.json
 
 # Go sum file (will be regenerated)
 go.sum
+web/node_modules
