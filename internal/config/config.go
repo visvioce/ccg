@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Config struct {
@@ -67,6 +70,22 @@ func New() *Config {
 	}
 }
 
+// stripJSON5 preprocesses JSON5 content to make it valid JSON
+func stripJSON5(data []byte) []byte {
+	s := string(data)
+
+	// Remove single-line comments (// ...)
+	s = regexp.MustCompile(`(?m)//[^\n]*`).ReplaceAllString(s, "")
+
+	// Remove multi-line comments (/* ... */)
+	s = regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(s, "")
+
+	// Remove trailing commas before } or ]
+	s = regexp.MustCompile(`,(\s*[}\]])`).ReplaceAllString(s, "$1")
+
+	return []byte(s)
+}
+
 func (c *Config) Load(path string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -78,18 +97,23 @@ func (c *Config) Load(path string) error {
 		return fmt.Errorf("failed to read config file: %w", err)
 	}
 
+	// Preprocess JSON5 (strip comments and trailing commas)
+	processedData := stripJSON5(data)
+
 	// Merge with existing data (preserve defaults like PORT)
 	newData := make(map[string]any)
-	if err := json.Unmarshal(data, &newData); err != nil {
+	if err := json.Unmarshal(processedData, &newData); err != nil {
 		return fmt.Errorf("failed to parse config: %w", err)
 	}
+	// Apply environment variable interpolation
+	newData = interpolateEnvVars(newData).(map[string]any)
 	// Merge new data into existing data
 	for k, v := range newData {
 		c.data[k] = v
 	}
 
 	var cfg AppConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	if err := json.Unmarshal(processedData, &cfg); err != nil {
 		return fmt.Errorf("failed to parse config: %w", err)
 	}
 
@@ -129,6 +153,33 @@ func (c *Config) Load(path string) error {
 	c.router = cfg.Router
 
 	return nil
+}
+
+// interpolateEnvVars replaces $VAR and ${VAR} patterns with environment variable values
+func interpolateEnvVars(obj any) any {
+	switch v := obj.(type) {
+	case string:
+		return interpolateString(v)
+	case map[string]any:
+		result := make(map[string]any)
+		for key, val := range v {
+			result[key] = interpolateEnvVars(val)
+		}
+		return result
+	case []any:
+		result := make([]any, len(v))
+		for i, val := range v {
+			result[i] = interpolateEnvVars(val)
+		}
+		return result
+	default:
+		return obj
+	}
+}
+
+// interpolateString replaces $VAR_NAME and ${VAR_NAME} with env var values
+func interpolateString(s string) string {
+	return os.ExpandEnv(s)
 }
 
 func (c *Config) Get(key string) string {
@@ -196,6 +247,12 @@ func (c *Config) GetProvider(name string) *Provider {
 	return nil
 }
 
+// IsNonInteractiveMode returns true if non-interactive mode is enabled
+func (c *Config) IsNonInteractiveMode() bool {
+	val := c.Get("NON_INTERACTIVE_MODE")
+	return val == "true" || val == "1"
+}
+
 func (c *Config) GetProviderTransform(providerName, model string) []string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -250,9 +307,104 @@ func GetPresetsDir() string {
 	return filepath.Join(GetConfigDir(), "presets")
 }
 
+// PluginConfig represents a plugin configuration entry
+type PluginConfig struct {
+	Name    string         `json:"name"`
+	Enabled bool           `json:"enabled"`
+	Options map[string]any `json:"options,omitempty"`
+}
+
+// GetPluginsFromConfig returns plugins configured in the config file
+func (c *Config) GetPluginsFromConfig() []PluginConfig {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	var plugins []PluginConfig
+
+	// Check "plugins" key
+	if p, ok := c.data["plugins"].([]any); ok {
+		for _, item := range p {
+			if pMap, ok := item.(map[string]any); ok {
+				pc := PluginConfig{}
+				if name, ok := pMap["name"].(string); ok {
+					pc.Name = name
+				}
+				if enabled, ok := pMap["enabled"].(bool); ok {
+					pc.Enabled = enabled
+				}
+				if opts, ok := pMap["options"].(map[string]any); ok {
+					pc.Options = opts
+				}
+				plugins = append(plugins, pc)
+			}
+		}
+	}
+
+	// Also check "Plugins" key
+	if p, ok := c.data["Plugins"].([]any); ok {
+		for _, item := range p {
+			if pMap, ok := item.(map[string]any); ok {
+				pc := PluginConfig{}
+				if name, ok := pMap["name"].(string); ok {
+					pc.Name = name
+				}
+				if enabled, ok := pMap["enabled"].(bool); ok {
+					pc.Enabled = enabled
+				}
+				if opts, ok := pMap["options"].(map[string]any); ok {
+					pc.Options = opts
+				}
+				plugins = append(plugins, pc)
+			}
+		}
+	}
+
+	return plugins
+}
+
+// GetRaw returns the raw config value for a key
+func (c *Config) GetRaw(key string) (any, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	v, ok := c.data[key]
+	return v, ok
+}
+
 // GetPIDFile returns the PID file path
 func GetPIDFile() string {
 	return filepath.Join(GetConfigDir(), ".claude-code-router.pid")
+}
+
+// Validate checks the config for required fields
+func (c *Config) Validate() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	var errors []string
+
+	providers := c.providers
+	if len(providers) > 0 {
+		// When providers are configured, HOST and APIKEY should be set
+		host, _ := c.data["HOST"].(string)
+		apiKey, _ := c.data["APIKEY"].(string)
+		if host == "" {
+			errors = append(errors, "HOST is required when providers are configured")
+		}
+		if apiKey == "" {
+			errors = append(errors, "APIKEY is required when providers are configured")
+		}
+	}
+
+	for i, p := range providers {
+		if p.Name == "" {
+			errors = append(errors, fmt.Sprintf("Provider %d missing name", i))
+		}
+		if len(p.Models) == 0 {
+			errors = append(errors, fmt.Sprintf("Provider '%s' has no models", p.Name))
+		}
+	}
+
+	return errors
 }
 
 func EnsureConfigDir() error {
@@ -261,4 +413,55 @@ func EnsureConfigDir() error {
 		return os.MkdirAll(dir, 0755)
 	}
 	return nil
+}
+
+// BackupConfigFile creates a timestamped backup of the config file, keeping only the 3 most recent backups
+func BackupConfigFile() (string, error) {
+	configPath := GetDefaultConfigPath()
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		return "", nil // No config file to backup
+	}
+
+	timestamp := time.Now().Format("2006-01-02T15-04-05")
+	backupPath := configPath + "." + timestamp + ".bak"
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	if err := os.WriteFile(backupPath, data, 0644); err != nil {
+		return "", fmt.Errorf("failed to write backup file: %w", err)
+	}
+
+	// Clean up old backups, keeping only the 3 most recent
+	cleanupOldBackups(configPath)
+
+	return backupPath, nil
+}
+
+// cleanupOldBackups removes old backup files, keeping only the 3 most recent
+func cleanupOldBackups(configPath string) {
+	configDir := filepath.Dir(configPath)
+	configFileName := filepath.Base(configPath)
+
+	entries, err := os.ReadDir(configDir)
+	if err != nil {
+		return
+	}
+
+	var backupFiles []string
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), configFileName) && strings.HasSuffix(entry.Name(), ".bak") {
+			backupFiles = append(backupFiles, entry.Name())
+		}
+	}
+
+	// Sort descending (newest first)
+	sort.Sort(sort.Reverse(sort.StringSlice(backupFiles)))
+
+	// Delete all but the 3 most recent
+	for i := 3; i < len(backupFiles); i++ {
+		os.Remove(filepath.Join(configDir, backupFiles[i]))
+	}
 }

@@ -53,6 +53,22 @@ func (m *AgentManager) GetAgent(name string) Agent {
 	return m.agents[name]
 }
 
+// HasTool checks if any registered agent has the specified tool
+func (m *AgentManager) HasTool(toolName string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, a := range m.agents {
+		if a.GetTools() != nil {
+			for _, t := range a.GetTools() {
+				if t.Name == toolName {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func (m *AgentManager) GetAllTools() []Tool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -307,6 +323,11 @@ func HandleAgentToolCallV2(toolName string, input map[string]any, reqBody map[st
 	}
 
 	return "", fmt.Errorf("tool not found: %s", toolName)
+}
+
+// HasAgentTool checks if any agent has the specified tool
+func HasAgentTool(toolName string) bool {
+	return GlobalAgentManager.HasTool(toolName)
 }
 
 // ProcessAgentRequest 处理 Agent 请求（注入系统提示等）

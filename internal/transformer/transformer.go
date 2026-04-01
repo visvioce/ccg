@@ -712,14 +712,10 @@ func BuildDefaultRegistry() *TransformerRegistry {
 
 	// Provider transformers
 	registry.RegisterRequest("anthropic", AnthropicToOpenAI)
-	registry.RegisterRequest("anthropic->openai", AnthropicToOpenAI)
-	registry.RegisterRequest("openai->anthropic", OpenAIToAnthropic)
 	registry.RegisterRequest("openai", func(req map[string]any, _ string) map[string]any { return req })
 	registry.RegisterRequest("deepseek", DeepSeekTransformer)
 	registry.RegisterRequest("gemini", GeminiTransformer)
-	registry.RegisterRequest("google", GeminiTransformer)
 	registry.RegisterRequest("groq", GroqTransformer)
-	registry.RegisterRequest("vercel", VercelTransformer)
 	registry.RegisterRequest("openrouter", func(req map[string]any, _ string) map[string]any { return req })
 
 	// Cerebras transformer
@@ -733,18 +729,8 @@ func BuildDefaultRegistry() *TransformerRegistry {
 	vertexGeminiTransformer := NewVertexGeminiTransformer()
 	registry.RegisterRequest("vertex-gemini", vertexGeminiTransformer.TransformRequest)
 
-	// Additional provider transformers
-	sambanovaTransformer := NewSambanovaTransformer()
-	registry.RegisterRequest("sambanova", sambanovaTransformer.TransformRequest)
-
-	hyperbolicTransformer := NewHyperbolicTransformer()
-	registry.RegisterRequest("hyperbolic", hyperbolicTransformer.TransformRequest)
-
-	novitaTransformer := NewNovitaTransformer()
-	registry.RegisterRequest("novita", novitaTransformer.TransformRequest)
-
-	fireworksTransformer := NewFireworksTransformer()
-	registry.RegisterRequest("fireworks", fireworksTransformer.TransformRequest)
+	// Vercel transformer
+	registry.RegisterRequest("vercel", VercelTransformer)
 
 	// Utility transformers
 	registry.RegisterRequest("maxtoken", MaxTokenTransformer)
@@ -757,11 +743,12 @@ func BuildDefaultRegistry() *TransformerRegistry {
 	registry.RegisterRequest("customparams", CustomParamsTransformer)
 	registry.RegisterRequest("reasoning", ReasoningTransformer)
 	registry.RegisterRequest("tooluse", TooluseTransformer)
-	registry.RegisterRequest("rewritesystemprompt", func(req map[string]any, model string) map[string]any {
-		// Get rewrite path from environment or config
-		rewritePath := os.Getenv("REWRITE_SYSTEM_PROMPT")
-		return RewriteSystemPromptTransformer(req, rewritePath)
-	})
+
+	// Pass-through transformers (CCR compatibility)
+	registry.RegisterRequest("gemini-cli", func(req map[string]any, _ string) map[string]any { return req })
+	registry.RegisterRequest("chutes-glm", func(req map[string]any, _ string) map[string]any { return req })
+	registry.RegisterRequest("qwen-cli", func(req map[string]any, _ string) map[string]any { return req })
+	registry.RegisterRequest("rovo-cli", func(req map[string]any, _ string) map[string]any { return req })
 
 	// Response transformers
 	registry.RegisterResponse("openai->anthropic", OpenAIToAnthropicResponse)

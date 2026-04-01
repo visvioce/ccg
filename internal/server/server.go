@@ -42,6 +42,7 @@ type Server struct {
 	addr            string
 	authEnabled     bool
 	apiKey          string
+	presetConfigs   map[string]map[string]any // preset name -> config
 }
 
 func New() *Server {
@@ -74,6 +75,7 @@ func New() *Server {
 		addr:            getAddr(cfg),
 		authEnabled:     authEnabled,
 		apiKey:          cfg.Get("APIKEY"),
+		presetConfigs:   make(map[string]map[string]any),
 	}
 }
 
@@ -102,115 +104,55 @@ func (s *Server) Setup() *gin.Engine {
 	engine.Use(middleware.CORSMiddleware())
 	engine.Use(middleware.ModelParseMiddleware())
 
+	// preHandler: auth middleware
 	if s.authEnabled {
 		engine.Use(middleware.AuthMiddleware(s.cfg.Get("HOST"), s.apiKey))
 	}
 
-	engine.POST("/v1/messages", s.handleV1Messages)
-	engine.POST("/v1/chat/completions", s.handleV1ChatCompletions)
-	engine.POST("/v1/messages/count_tokens", s.handleCountTokens)
+	// Core endpoints (matching @musistudio/llms)
+	engine.GET("/", s.handleRoot)
 	engine.GET("/health", s.handleHealth)
-	engine.GET("/v1/models", s.handleModels)
 
-	// Root path will be handled by Web UI if available, otherwise handleRoot
-	// engine.GET("/", s.handleRoot) // Moved to after Web UI setup
+	// Main endpoint with namespace routing support
+	engine.POST("/v1/messages", s.handleV1Messages)
+	engine.POST("/v1/messages/count_tokens", s.handleCountTokens)
 
 	api := engine.Group("/api")
 	{
 		api.GET("/config", s.handleGetConfig)
 		api.POST("/config", s.handleUpdateConfig)
-		api.GET("/providers", s.handleGetProviders)
-		api.POST("/providers", s.handleAddProvider)
-		api.PUT("/providers/:index", s.handleUpdateProvider)
-		api.DELETE("/providers/:index", s.handleDeleteProvider)
-
 		api.GET("/transformers", s.handleGetTransformers)
 
-		api.GET("/plugins", s.handleGetPlugins)
-		api.POST("/plugins/:name/enable", s.handleEnablePlugin)
-		api.POST("/plugins/:name/disable", s.handleDisablePlugin)
+		// Provider CRUD endpoints
+		api.GET("/providers", s.handleGetProviders)
+		api.POST("/providers", s.handleAddProvider)
+		api.GET("/providers/:id", s.handleGetProvider)
+		api.PUT("/providers/:id", s.handleUpdateProvider)
+		api.DELETE("/providers/:id", s.handleDeleteProvider)
 
-		api.GET("/agents", s.handleGetAgents)
-		api.GET("/agents/tools", s.handleGetAgentTools)
+		api.GET("/presets", s.handleListPresets)
+		api.GET("/presets/:name", s.handleGetPreset)
+		api.POST("/presets/:name/apply", s.handleApplyPreset)
+		api.DELETE("/presets/:name", s.handleDeletePreset)
+		api.GET("/presets/market", s.handleGetMarketPresets)
+		api.POST("/presets/install/github", s.handleInstallFromGithub)
 
-		api.GET("/token-stats", s.handleGetTokenStats)
-		api.GET("/global-token-stats", s.handleGetGlobalTokenStats)
+		api.GET("/logs/files", s.handleLogFiles)
+		api.GET("/logs", s.handleGetLogs)
+		api.DELETE("/logs", s.handleClearLogs)
+
+		api.POST("/update/perform", s.handlePerformUpdate)
+		api.GET("/update/check", s.handleCheckUpdate)
+
+		api.POST("/restart", s.handleRestart)
 	}
 
-	engine.GET("/presets", s.handleListPresets)
-	engine.GET("/presets/:name", s.handleGetPreset)
-	engine.POST("/presets/install", s.handleInstallPreset)
-	engine.POST("/presets/:name/apply", s.handleApplyPreset)
-	engine.DELETE("/presets/:name", s.handleDeletePreset)
+	// Preset namespace routes
+	engine.POST("/preset/:presetName/v1/messages", s.handlePresetV1Messages)
+	engine.POST("/preset/:presetName/v1/messages/count_tokens", s.handlePresetCountTokens)
 
-	engine.POST("/restart", s.handleRestart)
-
-	engine.GET("/logs/files", s.handleLogFiles)
-	engine.GET("/logs", s.handleGetLogs)
-	engine.DELETE("/logs", s.handleClearLogs)
-
-	// Web UI compatible endpoints (without /api prefix)
-	engine.GET("/config", s.handleGetConfig)
-	engine.POST("/config", s.handleUpdateConfig)
-
-	// Update endpoints for Web UI
-	engine.GET("/update/check", s.handleCheckUpdate)
-	engine.POST("/api/update/perform", s.handlePerformUpdate)
-
-	// Serve Web UI static files
-	webUIDir := os.Getenv("CCG_WEB_UI_DIR")
-	if webUIDir == "" {
-		// Look for web UI in common locations
-		possiblePaths := []string{
-			"./webui/dist",
-			"../webui/dist",
-			"/usr/share/ccg/webui",
-			filepath.Join(config.GetConfigDir(), "webui"),
-		}
-		for _, path := range possiblePaths {
-			if _, err := os.Stat(path); err == nil {
-				webUIDir = path
-				break
-			}
-		}
-	}
-
-	if webUIDir != "" {
-		log.Printf("Serving Web UI from: %s", webUIDir)
-		// Serve static files
-		engine.Static("/assets", filepath.Join(webUIDir, "assets"))
-		engine.StaticFile("/favicon.ico", filepath.Join(webUIDir, "favicon.ico"))
-
-		// Root handler to serve Web UI
-		engine.GET("/", func(c *gin.Context) {
-			c.File(filepath.Join(webUIDir, "index.html"))
-		})
-
-		// SPA fallback - serve index.html for all non-API routes
-		engine.NoRoute(func(c *gin.Context) {
-			// Don't interfere with API routes
-			if strings.HasPrefix(c.Request.URL.Path, "/api/") ||
-				strings.HasPrefix(c.Request.URL.Path, "/v1/") ||
-				c.Request.URL.Path == "/config" ||
-				c.Request.URL.Path == "/restart" ||
-				c.Request.URL.Path == "/update/check" ||
-				c.Request.URL.Path == "/logs" ||
-				c.Request.URL.Path == "/logs/files" ||
-				c.Request.URL.Path == "/presets" ||
-				c.Request.URL.Path == "/health" {
-				c.JSON(404, gin.H{"error": "Not found"})
-				return
-			}
-
-			// Serve index.html for SPA routes
-			indexPath := filepath.Join(webUIDir, "index.html")
-			c.File(indexPath)
-		})
-	} else {
-		// No Web UI available, use default root handler
-		engine.GET("/", s.handleRoot)
-	}
-
+	s.loadPresetConfigs()
+	s.registerPluginsFromConfig()
 	s.engine = engine
 	return engine
 }
@@ -233,7 +175,7 @@ func (s *Server) handleCountTokens(c *gin.Context) {
 }
 
 func (s *Server) handleHealth(c *gin.Context) {
-	c.JSON(200, gin.H{"status": "ok", "version": "2.0.0"})
+	c.JSON(200, gin.H{"status": "ok", "timestamp": time.Now().Unix()})
 }
 
 func (s *Server) handleModels(c *gin.Context) {
@@ -394,6 +336,20 @@ func (s *Server) handleGetProviders(c *gin.Context) {
 	c.JSON(200, providers)
 }
 
+func (s *Server) handleGetProvider(c *gin.Context) {
+	id := c.Param("id")
+	index := 0
+	fmt.Sscanf(id, "%d", &index)
+
+	providers := s.cfg.GetProviders()
+	if index < 0 || index >= len(providers) {
+		c.JSON(404, gin.H{"error": "Provider not found"})
+		return
+	}
+
+	c.JSON(200, providers[index])
+}
+
 func (s *Server) handleAddProvider(c *gin.Context) {
 	var provider config.Provider
 	if err := c.ShouldBindJSON(&provider); err != nil {
@@ -415,12 +371,13 @@ func (s *Server) handleUpdateProvider(c *gin.Context) {
 		return
 	}
 
+	id := c.Param("id")
 	index := 0
-	fmt.Sscanf(c.Param("index"), "%d", &index)
+	fmt.Sscanf(id, "%d", &index)
 
 	providers := s.cfg.GetProviders()
 	if index < 0 || index >= len(providers) {
-		c.JSON(400, gin.H{"error": "Invalid index"})
+		c.JSON(404, gin.H{"error": "Provider not found"})
 		return
 	}
 
@@ -431,12 +388,13 @@ func (s *Server) handleUpdateProvider(c *gin.Context) {
 }
 
 func (s *Server) handleDeleteProvider(c *gin.Context) {
+	id := c.Param("id")
 	index := 0
-	fmt.Sscanf(c.Param("index"), "%d", &index)
+	fmt.Sscanf(id, "%d", &index)
 
 	providers := s.cfg.GetProviders()
 	if index < 0 || index >= len(providers) {
-		c.JSON(400, gin.H{"error": "Invalid index"})
+		c.JSON(404, gin.H{"error": "Provider not found"})
 		return
 	}
 
@@ -482,6 +440,7 @@ func (s *Server) handleGetTransformers(c *gin.Context) {
 		{"name": "reasoning", "endpoint": nil},
 		{"name": "tooluse", "endpoint": nil},
 		{"name": "rewritesystemprompt", "endpoint": nil},
+		{"name": "openai-responses", "endpoint": nil},
 	}
 
 	c.JSON(200, gin.H{"transformers": transformers})
@@ -594,10 +553,36 @@ func (s *Server) handleApplyPreset(c *gin.Context) {
 		return
 	}
 
-	if err := s.presetManager.ApplyPreset(name, req.Secrets); err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+	presetDir := filepath.Join(config.GetPresetsDir(), name)
+
+	// Read existing manifest
+	manifestPath := filepath.Join(presetDir, "manifest.json")
+	manifestData, err := os.ReadFile(manifestPath)
+	if err != nil {
+		c.JSON(404, gin.H{"error": "Preset not found"})
 		return
 	}
+
+	var manifest map[string]any
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		c.JSON(500, gin.H{"error": "Invalid preset manifest"})
+		return
+	}
+
+	// Save userValues
+	if req.Secrets != nil && len(req.Secrets) > 0 {
+		manifest["userValues"] = req.Secrets
+	}
+
+	// Write back manifest
+	updatedData, _ := json.MarshalIndent(manifest, "", "  ")
+	if err := os.WriteFile(manifestPath, updatedData, 0644); err != nil {
+		c.JSON(500, gin.H{"error": "Failed to save preset"})
+		return
+	}
+
+	// Reload preset configs
+	s.loadPresetConfigs()
 
 	c.JSON(200, gin.H{"success": true})
 }
@@ -609,6 +594,296 @@ func (s *Server) handleDeletePreset(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"success": true})
+}
+
+func (s *Server) handleGetMarketPresets(c *gin.Context) {
+	presets, err := preset.GetMarketPresets()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"presets": presets})
+}
+
+func (s *Server) handlePresetUpload(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 50<<20)
+
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(400, gin.H{"error": "Failed to read uploaded file: " + err.Error()})
+		return
+	}
+	defer file.Close()
+
+	if !strings.HasSuffix(strings.ToLower(header.Filename), ".zip") {
+		c.JSON(400, gin.H{"error": "Only ZIP files are supported"})
+		return
+	}
+
+	presetName := c.PostForm("name")
+	if presetName == "" {
+		presetName = strings.TrimSuffix(header.Filename, ".zip")
+	}
+
+	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("ccg-upload-%d.zip", time.Now().UnixNano()))
+	dst, err := os.Create(tmpFile)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Failed to save uploaded file"})
+		return
+	}
+	defer os.Remove(tmpFile)
+
+	if _, err := io.Copy(dst, file); err != nil {
+		dst.Close()
+		c.JSON(500, gin.H{"error": "Failed to save uploaded file"})
+		return
+	}
+	dst.Close()
+
+	if err := s.presetManager.InstallFromZip(tmpFile, presetName); err != nil {
+		c.JSON(500, gin.H{"error": "Failed to install preset: " + err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{"success": true, "presetName": presetName})
+}
+
+func (s *Server) handleInstallFromGithub(c *gin.Context) {
+	var req struct {
+		PresetName string `json:"presetName"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.PresetName == "" {
+		c.JSON(400, gin.H{"error": "Preset name is required"})
+		return
+	}
+
+	// Find in marketplace
+	marketPreset, err := preset.FindMarketPresetByName(req.PresetName)
+	if err != nil {
+		c.JSON(404, gin.H{"error": "Preset not found in marketplace: " + req.PresetName})
+		return
+	}
+
+	if marketPreset.Repo == "" {
+		c.JSON(400, gin.H{"error": "Preset has no repository information"})
+		return
+	}
+
+	// Install from GitHub
+	if err := s.presetManager.InstallFromGitHub(marketPreset.Repo, marketPreset.Name); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{"success": true, "presetName": marketPreset.Name})
+}
+
+func (s *Server) loadPresetConfigs() {
+	presets, err := s.presetManager.ListPresets()
+	if err != nil {
+		log.Printf("Warning: failed to load preset configs: %v", err)
+		return
+	}
+
+	for _, p := range presets {
+		presetDir := filepath.Join(config.GetPresetsDir(), p.Name)
+		cfg, err := s.presetManager.LoadConfigFromManifest(presetDir)
+		if err != nil {
+			log.Printf("Warning: failed to load preset config for %s: %v", p.Name, err)
+			continue
+		}
+		s.presetConfigs[p.Name] = cfg
+		log.Printf("Loaded preset namespace: /preset/%s", p.Name)
+	}
+}
+
+func (s *Server) handlePresetV1Messages(c *gin.Context) {
+	presetName := c.Param("presetName")
+
+	presetCfg, ok := s.presetConfigs[presetName]
+	if !ok {
+		presetDir := filepath.Join(config.GetPresetsDir(), presetName)
+		cfg, err := s.presetManager.LoadConfigFromManifest(presetDir)
+		if err != nil {
+			c.JSON(404, gin.H{"error": "Preset not found: " + presetName})
+			return
+		}
+		s.presetConfigs[presetName] = cfg
+		presetCfg = cfg
+	}
+
+	providers := s.getProvidersFromConfig(presetCfg)
+	routerCfg := s.getRouterFromConfig(presetCfg)
+
+	bodyVal, _ := c.Get("requestBody")
+	body, ok := bodyVal.(map[string]any)
+	if !ok {
+		body = make(map[string]any)
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(400, gin.H{"error": "Invalid request body"})
+			return
+		}
+	}
+
+	model := ""
+	if m, ok := body["model"].(string); ok {
+		model = m
+	}
+
+	if model == "" && routerCfg != nil && routerCfg.Default != "" {
+		model = routerCfg.Default
+	}
+
+	var providerName, providerHost, providerAPIKey string
+	var transforms []string
+
+	for _, p := range providers {
+		for _, m := range p.Models {
+			if m == model || model == p.Name+","+m {
+				providerName = p.Name
+				providerHost = p.Host
+				providerAPIKey = p.APIKey
+				transforms = s.cfg.GetProviderTransform(p.Name, model)
+				break
+			}
+		}
+		if providerName != "" {
+			break
+		}
+	}
+
+	if providerHost == "" {
+		providerHost = s.providerService.GetDefaultHost(providerName)
+	}
+
+	stream := false
+	if bstream, ok := body["stream"].(bool); ok {
+		stream = bstream
+	}
+
+	bodyCopy := make(map[string]any)
+	for k, v := range body {
+		bodyCopy[k] = v
+	}
+	actualModel := s.getActualModel(model)
+	bodyCopy["model"] = actualModel
+
+	transformedBody := s.transformer.TransformRequest(bodyCopy, providerName, transforms)
+	reqBody, _ := json.Marshal(transformedBody)
+
+	proxyReq, err := http.NewRequest("POST", providerHost, bytes.NewReader(reqBody))
+	if err != nil {
+		c.JSON(502, gin.H{"error": err.Error()})
+		return
+	}
+
+	proxyReq.Header.Set("Content-Type", "application/json")
+	if providerAPIKey != "" {
+		proxyReq.Header.Set("Authorization", "Bearer "+providerAPIKey)
+	}
+	if stream {
+		proxyReq.Header.Set("Accept", "text/event-stream")
+	}
+
+	resp, err := s.providerService.GetHTTPClient().Do(proxyReq)
+	if err != nil {
+		c.JSON(502, gin.H{"error": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	if stream {
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Status(resp.StatusCode)
+
+		flusher, ok := c.Writer.(http.Flusher)
+		if !ok {
+			c.JSON(500, gin.H{"error": "Streaming not supported"})
+			return
+		}
+
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 4096), 1024*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			fmt.Fprintf(c.Writer, "%s\n", line)
+			flusher.Flush()
+		}
+	} else {
+		respBody, _ := io.ReadAll(resp.Body)
+		transformedResp := s.transformer.TransformResponse(respBody, providerName, transforms)
+		c.Data(resp.StatusCode, "application/json", transformedResp)
+	}
+}
+
+func (s *Server) handlePresetCountTokens(c *gin.Context) {
+	s.handleCountTokens(c)
+}
+
+func (s *Server) getProvidersFromConfig(cfg map[string]any) []config.Provider {
+	var providers []config.Provider
+	if pData, ok := cfg["Providers"].([]any); ok {
+		for _, p := range pData {
+			if pMap, ok := p.(map[string]any); ok {
+				provider := config.Provider{
+					Name:   getString(pMap, "name"),
+					Host:   getString(pMap, "api_base_url"),
+					APIKey: getString(pMap, "api_key"),
+				}
+				if models, ok := pMap["models"].([]any); ok {
+					for _, m := range models {
+						if mStr, ok := m.(string); ok {
+							provider.Models = append(provider.Models, mStr)
+						}
+					}
+				}
+				providers = append(providers, provider)
+			}
+		}
+	}
+	if len(providers) == 0 {
+		if pData, ok := cfg["providers"].([]any); ok {
+			for _, p := range pData {
+				if pMap, ok := p.(map[string]any); ok {
+					provider := config.Provider{
+						Name:   getString(pMap, "name"),
+						Host:   getString(pMap, "api_base_url"),
+						APIKey: getString(pMap, "api_key"),
+					}
+					if models, ok := pMap["models"].([]any); ok {
+						for _, m := range models {
+							if mStr, ok := m.(string); ok {
+								provider.Models = append(provider.Models, mStr)
+							}
+						}
+					}
+					providers = append(providers, provider)
+				}
+			}
+		}
+	}
+	return providers
+}
+
+func (s *Server) getRouterFromConfig(cfg map[string]any) *config.RouterConfig {
+	if rData, ok := cfg["Router"].(map[string]any); ok {
+		return &config.RouterConfig{
+			Default:     getString(rData, "default"),
+			Background:  getString(rData, "background"),
+			Think:       getString(rData, "think"),
+			LongContext: getString(rData, "longContext"),
+			WebSearch:   getString(rData, "webSearch"),
+			Image:       getString(rData, "image"),
+		}
+	}
+	return nil
 }
 
 func (s *Server) handleRestart(c *gin.Context) {
@@ -685,6 +960,28 @@ func (s *Server) getActualModel(model string) string {
 		}
 	}
 	return model
+}
+
+func (s *Server) registerPluginsFromConfig() {
+	pluginsData := s.cfg.GetPluginsFromConfig()
+	if len(pluginsData) == 0 {
+		return
+	}
+	for _, p := range pluginsData {
+		s.registerPluginByName(p.Name, p.Enabled, p.Options)
+	}
+}
+
+func (s *Server) registerPluginByName(name string, enabled bool, options map[string]any) {
+	switch name {
+	case "token-speed":
+		s.pluginManager.EnablePlugin("token-speed")
+		if !enabled {
+			s.pluginManager.DisablePlugin("token-speed")
+		}
+	default:
+		log.Printf("Warning: unknown plugin: %s", name)
+	}
 }
 
 func (s *Server) handleV1Messages(c *gin.Context) {
@@ -854,13 +1151,139 @@ func (s *Server) handleV1Messages(c *gin.Context) {
 			scanner := bufio.NewScanner(resp.Body)
 			scanner.Buffer(make([]byte, 4096), 1024*1024)
 
+			// Agent tool call interception state
+			var currentToolName string
+			var currentToolArgs string
+			var currentToolIndex int = -1
+			var currentToolId string
+			var toolMessages []map[string]any
+			var assistantMessages []map[string]any
+			hasAgents := agent.ShouldHandleAgentTools(bodyCopy)
+
 			for scanner.Scan() {
 				line := scanner.Text()
 				if strings.TrimSpace(line) == "" {
+					fmt.Fprintf(c.Writer, "\n")
+					flusher.Flush()
 					continue
 				}
+
 				if strings.HasPrefix(line, "data: ") {
 					data := strings.TrimPrefix(line, "data: ")
+
+					if data == "[DONE]" {
+						// If we collected tool calls, make recursive request
+						if hasAgents && len(toolMessages) > 0 {
+							// Add tool use and result messages
+							bodyCopy["messages"] = append(bodyCopy["messages"].([]map[string]any),
+								map[string]any{
+									"role":    "assistant",
+									"content": assistantMessages,
+								},
+								map[string]any{
+									"role":    "user",
+									"content": toolMessages,
+								},
+							)
+
+							// Make recursive request
+							recursiveBody, _ := json.Marshal(bodyCopy)
+							recursiveReq, _ := http.NewRequest("POST", "http://"+s.addr+"/v1/messages", bytes.NewReader(recursiveBody))
+							recursiveReq.Header.Set("Content-Type", "application/json")
+							if s.apiKey != "" {
+								recursiveReq.Header.Set("x-api-key", s.apiKey)
+							}
+
+							recursiveResp, err := http.DefaultClient.Do(recursiveReq)
+							if err == nil {
+								defer recursiveResp.Body.Close()
+								// Stream recursive response
+								recursiveScanner := bufio.NewScanner(recursiveResp.Body)
+								recursiveScanner.Buffer(make([]byte, 4096), 1024*1024)
+								for recursiveScanner.Scan() {
+									recLine := recursiveScanner.Text()
+									fmt.Fprintf(c.Writer, "%s\n", recLine)
+									flusher.Flush()
+								}
+							}
+						}
+
+						fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
+						flusher.Flush()
+						continue
+					}
+
+					// Parse SSE event for agent tool interception
+					if hasAgents {
+						var chunkData map[string]any
+						if err := json.Unmarshal([]byte(data), &chunkData); err == nil {
+							// Detect content_block_start with tool name
+							if eventType, ok := chunkData["type"].(string); ok && eventType == "content_block_start" {
+								if cb, ok := chunkData["content_block"].(map[string]any); ok {
+									if toolName, ok := cb["name"].(string); ok {
+										if agent.HasAgentTool(toolName) {
+											currentToolName = toolName
+											currentToolIndex = int(chunkData["index"].(float64))
+											if id, ok := cb["id"].(string); ok {
+												currentToolId = id
+											}
+											currentToolArgs = ""
+											continue // Don't forward this event
+										}
+									}
+								}
+							}
+
+							// Collect tool arguments
+							if currentToolIndex >= 0 {
+								if deltaType, ok := chunkData["type"].(string); ok && deltaType == "content_block_delta" {
+									if idx, ok := chunkData["index"].(float64); ok && int(idx) == currentToolIndex {
+										if delta, ok := chunkData["delta"].(map[string]any); ok {
+											if partialJSON, ok := delta["partial_json"].(string); ok {
+												currentToolArgs += partialJSON
+												continue // Don't forward this event
+											}
+										}
+									}
+								}
+							}
+
+							// Detect content_block_stop for tool call completion
+							if currentToolIndex >= 0 {
+								if eventType, ok := chunkData["type"].(string); ok && eventType == "content_block_stop" {
+									if idx, ok := chunkData["index"].(float64); ok && int(idx) == currentToolIndex {
+										// Execute the tool
+										var input map[string]any
+										json.Unmarshal([]byte(currentToolArgs), &input)
+
+										result, err := agent.HandleAgentToolCallV2(currentToolName, input, bodyCopy, s.cfg, sessionId)
+										if err == nil && result != "" {
+											assistantMessages = append(assistantMessages, map[string]any{
+												"type":  "tool_use",
+												"id":    currentToolId,
+												"name":  currentToolName,
+												"input": input,
+											})
+											toolMessages = append(toolMessages, map[string]any{
+												"tool_use_id": currentToolId,
+												"type":        "tool_result",
+												"content":     result,
+											})
+										}
+
+										// Reset state
+										currentToolName = ""
+										currentToolArgs = ""
+										currentToolIndex = -1
+										currentToolId = ""
+										continue // Don't forward this event
+									}
+								}
+							}
+						}
+					}
+
+					// Session usage tracking
 					if sessionId != "" {
 						var chunkData map[string]any
 						if err := json.Unmarshal([]byte(data), &chunkData); err == nil {
@@ -884,13 +1307,13 @@ func (s *Server) handleV1Messages(c *gin.Context) {
 							}
 						}
 					}
-					if data == "[DONE]" {
-						fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
-						flusher.Flush()
-						continue
-					}
+
+					// Forward the event
 					converted := transformer.ProcessStreamChunk([]byte(data), cfg.providerName)
 					fmt.Fprintf(c.Writer, "data: %s\n\n", converted)
+					flusher.Flush()
+				} else {
+					fmt.Fprintf(c.Writer, "%s\n", line)
 					flusher.Flush()
 				}
 			}

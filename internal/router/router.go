@@ -45,6 +45,20 @@ func (r *Router) Route(reqBody *tokenizer.RequestBody, sessionId string) *Router
 	providers := r.cfg.GetProviders()
 	router := r.cfg.GetRouter()
 
+	// REWRITE_SYSTEM_PROMPT support
+	if rewritePath := r.cfg.Get("REWRITE_SYSTEM_PROMPT"); rewritePath != "" {
+		if reqBody.System != nil {
+			if sysStr, ok := reqBody.System.(string); ok && strings.Contains(sysStr, "<env>") {
+				if promptData, err := os.ReadFile(rewritePath); err == nil {
+					parts := strings.SplitN(sysStr, "<env>", 2)
+					if len(parts) == 2 {
+						reqBody.System = string(promptData) + "<env>" + parts[1]
+					}
+				}
+			}
+		}
+	}
+
 	if strings.Contains(reqBody.Model, ",") {
 		parts := strings.SplitN(reqBody.Model, ",", 2)
 		providerName := parts[0]
