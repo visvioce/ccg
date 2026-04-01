@@ -61,7 +61,10 @@ func New() *Server {
 	providerSvc := provider.New(cfg, registry)
 	rtr := router.New(cfg)
 
-	authEnabled := cfg.Get("HOST") != "0.0.0.0" && cfg.Get("APIKEY") != ""
+	// Enable auth middleware when:
+	// 1. APIKEY is set (always require auth), OR
+	// 2. HOST is 0.0.0.0 (public access, need auth check)
+	authEnabled := cfg.Get("APIKEY") != "" || cfg.Get("HOST") == "0.0.0.0"
 
 	return &Server{
 		cfg:             cfg,
@@ -104,10 +107,7 @@ func (s *Server) Setup() *gin.Engine {
 	engine.Use(middleware.CORSMiddleware())
 	engine.Use(middleware.ModelParseMiddleware())
 
-	// preHandler: auth middleware
-	if s.authEnabled {
-		engine.Use(middleware.AuthMiddleware(s.cfg.Get("HOST"), s.apiKey))
-	}
+	// Auth applied per-route group, not globally (CCR behavior: / and /health are public)
 
 	// Core endpoints (matching @musistudio/llms)
 	engine.GET("/", s.handleRoot)
@@ -116,6 +116,12 @@ func (s *Server) Setup() *gin.Engine {
 	// Main endpoint with namespace routing support
 	engine.POST("/v1/messages", s.handleV1Messages)
 	engine.POST("/v1/messages/count_tokens", s.handleCountTokens)
+
+	// Auth middleware for protected routes
+	if s.authEnabled {
+		authMw := middleware.AuthMiddleware(s.cfg.Get("HOST"), s.apiKey, s.cfg.Get("PORT"))
+		engine.Use(authMw)
+	}
 
 	api := engine.Group("/api")
 	{

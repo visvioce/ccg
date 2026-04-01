@@ -23,9 +23,37 @@ func CORSMiddleware() gin.HandlerFunc {
 	}
 }
 
-func AuthMiddleware(host string, apiKey string) gin.HandlerFunc {
+func AuthMiddleware(host string, apiKey string, port string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if host == "0.0.0.0" || host == "" {
+		// Public endpoints that don't require authentication
+		path := c.Request.URL.Path
+		if path == "/" || path == "/health" || strings.HasPrefix(path, "/ui") {
+			c.Next()
+			return
+		}
+
+		// If no API key is set, allow local access
+		if apiKey == "" {
+			allowedOrigins := []string{
+				"http://127.0.0.1:" + port,
+				"http://localhost:" + port,
+			}
+			origin := c.GetHeader("Origin")
+			if origin != "" {
+				allowed := false
+				for _, allowedOrigin := range allowedOrigins {
+					if origin == allowedOrigin {
+						allowed = true
+						break
+					}
+				}
+				if !allowed {
+					c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+						"error": "CORS not allowed for this origin",
+					})
+					return
+				}
+			}
 			c.Next()
 			return
 		}

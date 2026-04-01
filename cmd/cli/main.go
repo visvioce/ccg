@@ -59,6 +59,8 @@ func main() {
 		runStatusline()
 	case "install":
 		handleInstall()
+	case "-h", "--help", "help":
+		printUsage()
 	case "-v", "--version", "version":
 		showVersion()
 	default:
