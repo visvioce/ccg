@@ -20,6 +20,7 @@ import (
 	"github.com/musistudio/ccg/internal/preset"
 	"github.com/musistudio/ccg/internal/server"
 	"github.com/musistudio/ccg/internal/statusline"
+	"github.com/musistudio/ccg/pkg/colors"
 	"github.com/musistudio/ccg/pkg/shared"
 )
 
@@ -75,40 +76,47 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Println(`CCG - Claude Code Router v` + VERSION + `
+	fmt.Printf(`%s%s%s%s
 
-Usage: ccg <command> [arguments]
-
-Commands:
-  start              Start the CCG server
-  stop               Stop the CCG server
-  restart            Restart the CCG server
-  status             Show server status
-  statusline         Integrated statusline for prompt
-  code               Execute claude command
-  model              Interactive model selection
-  ui                 Open Web UI
-  preset             Manage presets
-  install            Install preset from marketplace
-  activate           Output environment variables
-  env                Show environment variables
-  -v, version        Show version
-  <preset> <prompt>  Execute prompt with preset configuration
-
-Examples:
-  ccg start
-  ccg status
-  ccg model
-  ccg preset list
-  ccg my-preset "Write a Hello World"  # Use preset configuration`)
+`, colors.Bold, colors.Colorize(colors.Cyan, "CCG"), colors.Reset, colors.Colorize(colors.Dim, " - Claude Code Router"))
+	fmt.Printf("%s%s%s\n\n", colors.Dim, "Usage:", colors.Reset)
+	fmt.Printf("  %sccg %s<%scommand%s>\n\n", colors.Bold, colors.Reset, colors.Dim, colors.Reset)
+	
+	fmt.Printf("%s%s%s\n", colors.Dim, "Commands:", colors.Reset)
+	fmt.Printf("  %s%-15s%s Start the CCG server\n", colors.Colorize(colors.Green, "• "), "start", colors.Reset)
+	fmt.Printf("  %s%-15s%s Stop the CCG server\n", colors.Colorize(colors.Green, "• "), "stop", colors.Reset)
+	fmt.Printf("  %s%-15s%s Restart the CCG server\n", colors.Colorize(colors.Green, "• "), "restart", colors.Reset)
+	fmt.Printf("  %s%-15s%s Show server status\n", colors.Colorize(colors.Green, "• "), "status", colors.Reset)
+	fmt.Printf("  %s%-15s%s Integrated statusline for prompt\n", colors.Colorize(colors.Green, "• "), "statusline", colors.Reset)
+	fmt.Printf("  %s%-15s%s Execute claude command\n", colors.Colorize(colors.Green, "• "), "code", colors.Reset)
+	fmt.Printf("  %s%-15s%s Interactive model selection\n", colors.Colorize(colors.Green, "• "), "model", colors.Reset)
+	fmt.Printf("  %s%-15s%s Open Web UI\n", colors.Colorize(colors.Green, "• "), "ui", colors.Reset)
+	fmt.Printf("  %s%-15s%s Manage presets\n", colors.Colorize(colors.Green, "• "), "preset", colors.Reset)
+	fmt.Printf("  %s%-15s%s Install preset from marketplace\n", colors.Colorize(colors.Green, "• "), "install", colors.Reset)
+	fmt.Printf("  %s%-15s%s Output environment variables\n", colors.Colorize(colors.Green, "• "), "activate", colors.Reset)
+	fmt.Printf("  %s%-15s%s Show environment variables\n", colors.Colorize(colors.Green, "• "), "env", colors.Reset)
+	fmt.Printf("  %s%-15s%s Show version\n", colors.Colorize(colors.Green, "• "), "-v, version", colors.Reset)
+	fmt.Printf("  %s%-15s%s Execute prompt with preset\n", colors.Colorize(colors.Green, "• "), "<preset>", colors.Reset)
+	
+	fmt.Printf("\n%s%s%s\n", colors.Dim, "Examples:", colors.Reset)
+	fmt.Printf("  %sccg start%s\n", colors.Colorize(colors.Cyan, ""), colors.Reset)
+	fmt.Printf("  %sccg status%s\n", colors.Colorize(colors.Cyan, ""), colors.Reset)
+	fmt.Printf("  %sccg model%s\n", colors.Colorize(colors.Cyan, ""), colors.Reset)
+	fmt.Printf("  %sccg preset list%s\n", colors.Colorize(colors.Cyan, ""), colors.Reset)
+	fmt.Printf("  %sccg my-preset %s\"Write a Hello World\"%s  %s# Use preset configuration%s\n", 
+		colors.Colorize(colors.Cyan, ""), 
+		colors.Colorize(colors.Yellow, ""),
+		colors.Reset,
+		colors.Dim,
+		colors.Reset)
 }
 
 func startServer() {
-	log.Println("Starting CCG server...")
+	fmt.Printf("%sStarting CCG server...\n", colors.Colorize(colors.Cyan, "→ "))
 
 	// Check if already running
 	if isRunning() {
-		log.Println("CCG server is already running")
+		fmt.Println(colors.Colorize(colors.Yellow, "⚠ CCG server is already running"))
 		return
 	}
 
@@ -119,16 +127,17 @@ func startServer() {
 		cmd.Stdout = nil
 		cmd.Stderr = nil
 		if err := cmd.Start(); err != nil {
-			log.Fatalf("Failed to start daemon: %v", err)
+			fmt.Printf("%sFailed to start daemon: %v\n", colors.Colorize(colors.Red, "✗ "), err)
+			os.Exit(1)
 		}
 		// Don't save PID here - let the child process save its own PID
 		// Just wait a moment for child to start
 		time.Sleep(500 * time.Millisecond)
 		// Read PID from file (child should have created it)
 		if pidData, err := os.ReadFile(shared.PIDFile); err == nil {
-			log.Printf("CCG server started in background (PID: %s)", strings.TrimSpace(string(pidData)))
+			fmt.Printf("%sCCG server started in background (PID: %s)\n", colors.Colorize(colors.Green, "✓ "), strings.TrimSpace(string(pidData)))
 		} else {
-			log.Println("CCG server started in background")
+			fmt.Println(colors.Colorize(colors.Green, "✓ CCG server started in background"))
 		}
 		return
 	}
@@ -136,11 +145,13 @@ func startServer() {
 	// Run in foreground
 	// Save PID to file first
 	if err := os.WriteFile(shared.PIDFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644); err != nil {
-		log.Printf("Warning: failed to write PID file: %v", err)
+		fmt.Printf("%sWarning: failed to write PID file: %v\n", colors.Colorize(colors.Yellow, "⚠ "), err)
 	}
+	fmt.Println(colors.Colorize(colors.Green, "✓ CCG server started"))
 	srv := server.New()
 	if err := srv.Start(); err != nil {
-		log.Fatalf("Server error: %v", err)
+		fmt.Printf("%sServer error: %v\n", colors.Colorize(colors.Red, "✗ "), err)
+		os.Exit(1)
 	}
 }
 
@@ -187,14 +198,14 @@ func startUI() {
 }
 
 func stopServer() {
-	log.Println("Stopping CCG server...")
+	fmt.Printf("%sStopping CCG server...\n", colors.Colorize(colors.Cyan, "→ "))
 
 	// Check reference count
 	if data, err := os.ReadFile(refCountFile); err == nil {
 		count := 0
 		fmt.Sscanf(string(data), "%d", &count)
 		if count > 0 {
-			log.Printf("Cannot stop server: %d active code sessions running", count)
+			fmt.Printf("%sCannot stop server: %d active code sessions running\n", colors.Colorize(colors.Yellow, "⚠ "), count)
 			return
 		}
 	}
@@ -202,13 +213,13 @@ func stopServer() {
 	// Read PID from file
 	pidData, err := os.ReadFile(shared.PIDFile)
 	if err != nil {
-		log.Println("CCG server is not running (no PID file)")
+		fmt.Println(colors.Colorize(colors.Yellow, "⚠ CCG server is not running (no PID file)"))
 		return
 	}
 
 	pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
 	if err != nil {
-		log.Println("Invalid PID file")
+		fmt.Println(colors.Colorize(colors.Yellow, "⚠ Invalid PID file"))
 		os.Remove(shared.PIDFile)
 		return
 	}
@@ -216,15 +227,15 @@ func stopServer() {
 	// Kill the process
 	process, err := os.FindProcess(pid)
 	if err != nil {
-		log.Println("CCG server is not running")
+		fmt.Println(colors.Colorize(colors.Yellow, "⚠ CCG server is not running"))
 		os.Remove(shared.PIDFile)
 		return
 	}
 
 	if err := process.Kill(); err != nil {
-		log.Printf("Failed to stop server: %v", err)
+		fmt.Printf("%sFailed to stop server: %v\n", colors.Colorize(colors.Red, "✗ "), err)
 	} else {
-		log.Println("CCG server stopped successfully")
+		fmt.Println(colors.Colorize(colors.Green, "✓ CCG server stopped successfully"))
 	}
 
 	// Clean up PID file
@@ -236,45 +247,45 @@ func showStatus() {
 	configPath := config.GetDefaultConfigPath()
 
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		fmt.Println("CCG is not configured. Run 'ccg start' to start with default settings.")
+		fmt.Println(colors.Colorize(colors.Yellow, "CCG is not configured. Run 'ccg start' to start with default settings."))
 		return
 	}
 
 	if err := cfg.Load(configPath); err != nil {
-		fmt.Printf("Error loading config: %v\n", err)
+		fmt.Printf("%sError loading config: %v\n", colors.Colorize(colors.Red, "✗ "), err)
 		return
 	}
 
-	fmt.Printf("CCG Status:\n")
-	fmt.Printf("  Config: %s\n", configPath)
-	fmt.Printf("  Server: ")
+	fmt.Printf("%sCCG Status:\n", colors.Colorize(colors.BoldCyan, "→ "))
+	fmt.Printf("  %s%s\n", colors.Colorize(colors.Dim, "Config: "), configPath)
+	fmt.Printf("  %s", colors.Colorize(colors.Dim, "Server: "))
 
 	if isRunning() {
-		fmt.Println("Running")
+		fmt.Println(colors.Colorize(colors.Green, "Running ✓"))
 	} else {
-		fmt.Println("Stopped")
+		fmt.Println(colors.Colorize(colors.Red, "Stopped ✗"))
 	}
 
 	providers := cfg.GetProviders()
-	fmt.Printf("  Providers: %d configured\n", len(providers))
+	fmt.Printf("  %s%d configured\n", colors.Colorize(colors.Dim, "Providers: "), len(providers))
 
 	for _, p := range providers {
-		apiKeyDisplay := p.APIKey
-		if len(apiKeyDisplay) > 8 {
-			apiKeyDisplay = apiKeyDisplay[:8] + "..."
-		}
-		fmt.Printf("    - %s (%d models)\n", p.Name, len(p.Models))
+		fmt.Printf("    %s%s %s(%d models)\n", 
+			colors.Colorize(colors.Green, "•"),
+			colors.Colorize(colors.Bold, p.Name),
+			colors.Colorize(colors.Dim, ""),
+			len(p.Models))
 	}
 
 	router := cfg.GetRouter()
 	if router != nil {
-		fmt.Printf("  Router:\n")
-		fmt.Printf("    default: %s\n", router.Default)
+		fmt.Printf("  %s\n", colors.Colorize(colors.Dim, "Router:"))
+		fmt.Printf("    %s%s\n", colors.Colorize(colors.Dim, "default: "), router.Default)
 		if router.Background != "" {
-			fmt.Printf("    background: %s\n", router.Background)
+			fmt.Printf("    %s%s\n", colors.Colorize(colors.Dim, "background: "), router.Background)
 		}
 		if router.Think != "" {
-			fmt.Printf("    think: %s\n", router.Think)
+			fmt.Printf("    %s%s\n", colors.Colorize(colors.Dim, "think: "), router.Think)
 		}
 	}
 }
@@ -544,24 +555,32 @@ func runStatusline() {
 
 func handleInstall() {
 	if len(os.Args) < 3 {
-		fmt.Println("Usage: ccg install <preset-name>")
+		fmt.Printf("%sUsage: ccg install <preset-name>\n", colors.Colorize(colors.Yellow, "⚠ "))
 		os.Exit(1)
 	}
 
 	name := os.Args[2]
 	pm := preset.NewPresetManager()
 
+	fmt.Printf("%sInstalling preset '%s' from marketplace...\n", colors.Colorize(colors.Cyan, "→ "), name)
+	
 	marketURL := fmt.Sprintf("https://raw.githubusercontent.com/musistudio/ccg-presets/main/%s/manifest.json", name)
 	if err := pm.InstallPreset(marketURL, name); err != nil {
-		fmt.Printf("Error installing preset: %v\n", err)
+		fmt.Printf("%sError installing preset: %v\n", colors.Colorize(colors.Red, "✗ "), err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Preset '%s' installed successfully\n", name)
+	fmt.Printf("%sPreset '%s' installed successfully\n", colors.Colorize(colors.Green, "✓ "), colors.Colorize(colors.Bold, name))
 }
 
 func showVersion() {
-	fmt.Printf("CCG version %s\n", VERSION)
+	fmt.Printf("%s%s%s %sversion %s%s\n", 
+		colors.Bold, 
+		colors.Colorize(colors.Cyan, "CCG"), 
+		colors.Reset,
+		colors.Dim,
+		VERSION,
+		colors.Reset)
 }
 
 func isRunning() bool {
@@ -613,20 +632,25 @@ func handlePreset() {
 	case "list":
 		presets, err := pm.ListPresets()
 		if err != nil {
-			fmt.Printf("Error listing presets: %v\n", err)
+			fmt.Printf("%sError listing presets: %v\n", colors.Colorize(colors.Red, "✗ "), err)
 			return
 		}
 
 		if len(presets) == 0 {
-			fmt.Println("No presets installed.")
+			fmt.Println(colors.Colorize(colors.Yellow, "No presets installed."))
 			return
 		}
 
-		fmt.Println("Installed presets:")
+		fmt.Printf("%sInstalled presets:\n", colors.Colorize(colors.BoldCyan, "→ "))
 		for _, p := range presets {
-			fmt.Printf("  - %s (v%s)\n", p.Name, p.Version)
+			fmt.Printf("  %s%s %s(v%s)%s\n", 
+				colors.Colorize(colors.Green, "• "),
+				colors.Colorize(colors.Bold, p.Name),
+				colors.Dim,
+				p.Version,
+				colors.Reset)
 			if p.Description != "" {
-				fmt.Printf("    %s\n", p.Description)
+				fmt.Printf("    %s%s%s\n", colors.Dim, p.Description, colors.Reset)
 			}
 		}
 

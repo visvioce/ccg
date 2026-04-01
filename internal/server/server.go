@@ -153,6 +153,9 @@ func (s *Server) Setup() *gin.Engine {
 		api.POST("/restart", s.handleRestart)
 	}
 
+	// Static files for Web UI
+	engine.Static("/ui", "./web/dist")
+
 	// Preset namespace routes
 	engine.POST("/preset/:presetName/v1/messages", s.handlePresetV1Messages)
 	engine.POST("/preset/:presetName/v1/messages/count_tokens", s.handlePresetCountTokens)

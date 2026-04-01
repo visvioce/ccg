@@ -74,11 +74,28 @@ func New() *Config {
 func stripJSON5(data []byte) []byte {
 	s := string(data)
 
-	// Remove single-line comments (// ...)
-	s = regexp.MustCompile(`(?m)//[^\n]*`).ReplaceAllString(s, "")
-
-	// Remove multi-line comments (/* ... */)
+	// Remove multi-line comments (/* ... */) first
 	s = regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(s, "")
+
+	// Remove single-line comments (// ...)
+	// Use a more careful approach: match // that is not preceded by :
+	// This avoids matching URLs like http:// or https://
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		// Find // that is not part of a URL (not preceded by :)
+		for j := 0; j < len(line)-1; j++ {
+			if line[j] == '/' && line[j+1] == '/' {
+				// Check if it's preceded by : (part of URL)
+				if j > 0 && line[j-1] == ':' {
+					continue // Skip URLs like http:// or https://
+				}
+				// This is a comment, remove everything from here
+				lines[i] = line[:j]
+				break
+			}
+		}
+	}
+	s = strings.Join(lines, "\n")
 
 	// Remove trailing commas before } or ]
 	s = regexp.MustCompile(`,(\s*[}\]])`).ReplaceAllString(s, "$1")
